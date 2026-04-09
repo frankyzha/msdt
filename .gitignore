@@ -138,11 +138,15 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.analysis-venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local workspace scratch directories
+"$TMPDIR"/
 
 # Spyder project settings
 .spyderproject
