@@ -122,6 +122,11 @@ struct FitResult {
     long long atomized_coarse_candidates = 0;
     long long atomized_final_candidates = 0;
     long long atomized_coarse_pruned_candidates = 0;
+    long long atomized_compression_features_applied = 0;
+    long long atomized_compression_features_collapsed_to_single_block = 0;
+    long long atomized_compression_atoms_before_total = 0;
+    long long atomized_compression_blocks_after_total = 0;
+    long long atomized_compression_atoms_merged_total = 0;
     std::vector<long long> greedy_feature_survivor_histogram;
     long long nominee_unique_total = 0;
     long long nominee_child_interval_lookups = 0;

@@ -405,6 +405,12 @@ PYBIND11_MODULE(_libgosdt, m) {
             out["atomized_coarse_candidates"] = solved.atomized_coarse_candidates;
             out["atomized_final_candidates"] = solved.atomized_final_candidates;
             out["atomized_coarse_pruned_candidates"] = solved.atomized_coarse_pruned_candidates;
+            out["atomized_compression_features_applied"] = solved.atomized_compression_features_applied;
+            out["atomized_compression_features_collapsed_to_single_block"] =
+                solved.atomized_compression_features_collapsed_to_single_block;
+            out["atomized_compression_atoms_before_total"] = solved.atomized_compression_atoms_before_total;
+            out["atomized_compression_blocks_after_total"] = solved.atomized_compression_blocks_after_total;
+            out["atomized_compression_atoms_merged_total"] = solved.atomized_compression_atoms_merged_total;
             out["greedy_feature_survivor_histogram"] = solved.greedy_feature_survivor_histogram;
             out["nominee_unique_total"] = solved.nominee_unique_total;
             out["nominee_child_interval_lookups"] = solved.nominee_child_interval_lookups;

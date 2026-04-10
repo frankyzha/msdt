@@ -299,6 +299,11 @@ class Solver {
         long long &atomized_coarse_candidates;
         long long &atomized_final_candidates;
         long long &atomized_coarse_pruned_candidates;
+        long long &atomized_compression_features_applied;
+        long long &atomized_compression_features_collapsed_to_single_block;
+        long long &atomized_compression_atoms_before_total;
+        long long &atomized_compression_blocks_after_total;
+        long long &atomized_compression_atoms_merged_total;
         std::vector<long long> &greedy_feature_survivor_histogram;
         std::vector<long long> &atomized_feature_atom_count_histogram;
         std::vector<long long> &atomized_feature_block_atom_count_histogram;
@@ -456,6 +461,11 @@ class Solver {
               atomized_coarse_candidates_,
               atomized_final_candidates_,
               atomized_coarse_pruned_candidates_,
+              atomized_compression_features_applied_,
+              atomized_compression_features_collapsed_to_single_block_,
+              atomized_compression_atoms_before_total_,
+              atomized_compression_blocks_after_total_,
+              atomized_compression_atoms_merged_total_,
               greedy_feature_survivor_histogram_,
               atomized_feature_atom_count_histogram_,
               atomized_feature_block_atom_count_histogram_,
@@ -743,6 +753,12 @@ class Solver {
         out.atomized_coarse_candidates = atomized_coarse_candidates_;
         out.atomized_final_candidates = atomized_final_candidates_;
         out.atomized_coarse_pruned_candidates = atomized_coarse_pruned_candidates_;
+        out.atomized_compression_features_applied = atomized_compression_features_applied_;
+        out.atomized_compression_features_collapsed_to_single_block =
+            atomized_compression_features_collapsed_to_single_block_;
+        out.atomized_compression_atoms_before_total = atomized_compression_atoms_before_total_;
+        out.atomized_compression_blocks_after_total = atomized_compression_blocks_after_total_;
+        out.atomized_compression_atoms_merged_total = atomized_compression_atoms_merged_total_;
         out.greedy_feature_survivor_histogram = greedy_feature_survivor_histogram_;
         out.nominee_unique_total = nominee_unique_total_;
         out.nominee_child_interval_lookups = nominee_child_interval_lookups_;
@@ -946,6 +962,11 @@ class Solver {
     long long atomized_coarse_candidates_ = 0;
     long long atomized_final_candidates_ = 0;
     long long atomized_coarse_pruned_candidates_ = 0;
+    long long atomized_compression_features_applied_ = 0;
+    long long atomized_compression_features_collapsed_to_single_block_ = 0;
+    long long atomized_compression_atoms_before_total_ = 0;
+    long long atomized_compression_blocks_after_total_ = 0;
+    long long atomized_compression_atoms_merged_total_ = 0;
     std::vector<long long> greedy_feature_survivor_histogram_;
     long long nominee_unique_total_ = 0;
     long long nominee_child_interval_lookups_ = 0;

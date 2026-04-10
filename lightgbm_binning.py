@@ -387,7 +387,7 @@ def fit_lightgbm_binner(
     bagging_freq: int = 0,
     max_depth: int = -1,
     min_data_in_bin: int = 1,
-    min_data_in_leaf: int = 2,
+    min_data_in_leaf: Optional[int] = None,
     lambda_l2: float = 0.0,
     early_stopping_rounds: int = 100,
     num_threads: int = 1,
@@ -422,6 +422,10 @@ def fit_lightgbm_binner(
         raise ValueError("ensemble_bagging_freq must be >= 0")
     if threshold_dedup_eps < 0:
         raise ValueError("threshold_dedup_eps must be >= 0")
+    if min_data_in_leaf is None:
+        min_data_in_leaf = int(min_samples_leaf)
+    else:
+        min_data_in_leaf = int(min_data_in_leaf)
     if min_data_in_leaf < 1:
         raise ValueError("min_data_in_leaf must be at least 1")
     if lambda_l2 < 0:

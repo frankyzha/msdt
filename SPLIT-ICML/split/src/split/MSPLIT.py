@@ -73,6 +73,11 @@ _NATIVE_INT_METRIC_KEYS = _metric_keys(
     atomized_coarse_candidates
     atomized_final_candidates
     atomized_coarse_pruned_candidates
+    atomized_compression_features_applied
+    atomized_compression_features_collapsed_to_single_block
+    atomized_compression_atoms_before_total
+    atomized_compression_blocks_after_total
+    atomized_compression_atoms_merged_total
     nominee_unique_total
     nominee_child_interval_lookups
     nominee_child_interval_unique
@@ -305,6 +310,12 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
     Above lookahead depth, the solver performs systematic DP recursion.
     At exactly the lookahead depth, it computes a greedy completion and sets
     ``lb = ub = greedy_objective`` for that subproblem.
+
+    When ``exactify_top_k`` is left unspecified, the atomized solver exactifies
+    a ``sqrt(N)`` prefix of the shortlisted nominees at each node. In dual-family
+    mode, the shortlist is bucketed by family and the same rule is applied within
+    each bucket separately. If ``exactify_top_k=K`` is specified, the solver
+    exactifies up to ``K`` nominees from each active family bucket.
     """
 
     def __init__(

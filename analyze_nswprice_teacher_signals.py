@@ -244,7 +244,7 @@ def main() -> None:
         bagging_freq=0,
         max_depth=-1,
         min_data_in_bin=LGB_MIN_DATA_IN_BIN,
-        min_data_in_leaf=2,
+        min_data_in_leaf=MIN_SAMPLES_LEAF,
         lambda_l2=LGB_LAMBDA_L2,
         early_stopping_rounds=100,
         num_threads=LGB_NUM_THREADS,

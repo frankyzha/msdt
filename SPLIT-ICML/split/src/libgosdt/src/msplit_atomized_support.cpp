@@ -155,6 +155,405 @@
         kHardLoss
     };
 
+    enum class AtomizedCompressionRule {
+        kCurrent,
+        kPureSameClass,
+        kProportionalProfile,
+        kBic,
+        kConfidenceOverlap,
+        kPlateau,
+        kNone
+    };
+
+    bool atomized_use_dual_families() const {
+        const char *raw = std::getenv("MSPLIT_ATOM_FAMILY_MODE");
+        if (raw == nullptr || raw[0] == '\0') {
+            return true;
+        }
+        const std::string value(raw);
+        if (value == "impurity" || value == "impurity_only" || value == "single" || value == "single_family") {
+            return false;
+        }
+        return true;
+    }
+
+    AtomizedCompressionRule atomized_compression_rule() const {
+        const char *raw = std::getenv("MSPLIT_ATOM_COMPRESSION_RULE");
+        if (raw == nullptr || raw[0] == '\0') {
+            return AtomizedCompressionRule::kPureSameClass;
+        }
+        const std::string value(raw);
+        if (value == "current") {
+            return AtomizedCompressionRule::kCurrent;
+        }
+        if (value == "pure" || value == "pure_same_class") {
+            return AtomizedCompressionRule::kPureSameClass;
+        }
+        if (value == "proportional" || value == "proportional_profile") {
+            return AtomizedCompressionRule::kProportionalProfile;
+        }
+        if (value == "bic" || value == "mdl" || value == "bic_mdl") {
+            return AtomizedCompressionRule::kBic;
+        }
+        if (value == "confidence" || value == "confidence_overlap") {
+            return AtomizedCompressionRule::kConfidenceOverlap;
+        }
+        if (value == "plateau" || value == "plateau_denoise" || value == "global_plateau") {
+            return AtomizedCompressionRule::kPlateau;
+        }
+        if (value == "none" || value == "raw") {
+            return AtomizedCompressionRule::kNone;
+        }
+        return AtomizedCompressionRule::kCurrent;
+    }
+
+    static bool atom_is_empirically_pure(const AtomizedAtom &atom) {
+        if (!atom.class_weight.empty()) {
+            double total = 0.0;
+            double best = 0.0;
+            for (double value : atom.class_weight) {
+                total += value;
+                best = std::max(best, value);
+            }
+            return total <= kEpsUpdate || (total - best) <= kEpsUpdate;
+        }
+        return std::min(atom.pos_weight, atom.neg_weight) <= kEpsUpdate;
+    }
+
+    static bool normalized_profile_equal(
+        const std::vector<double> &lhs,
+        const std::vector<double> &rhs,
+        double lhs_total,
+        double rhs_total
+    ) {
+        if (lhs.size() != rhs.size()) {
+            return false;
+        }
+        if (lhs_total <= kEpsUpdate || rhs_total <= kEpsUpdate) {
+            return false;
+        }
+        constexpr double kProfileTol = 1e-10;
+        for (size_t idx = 0; idx < lhs.size(); ++idx) {
+            const double lhs_norm = lhs[idx] / lhs_total;
+            const double rhs_norm = rhs[idx] / rhs_total;
+            if (std::fabs(lhs_norm - rhs_norm) > kProfileTol) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool proportional_binary_profile_equal(
+        double lhs_pos,
+        double lhs_neg,
+        double rhs_pos,
+        double rhs_neg
+    ) {
+        const double lhs_total = lhs_pos + lhs_neg;
+        const double rhs_total = rhs_pos + rhs_neg;
+        if (lhs_total <= kEpsUpdate || rhs_total <= kEpsUpdate) {
+            return false;
+        }
+        constexpr double kProfileTol = 1e-10;
+        const double cross_delta = std::fabs(lhs_pos * rhs_total - rhs_pos * lhs_total);
+        const double scale = std::max({1.0, std::fabs(lhs_pos * rhs_total), std::fabs(rhs_pos * lhs_total)});
+        return cross_delta <= kProfileTol * scale;
+    }
+
+    static std::pair<double, double> atomized_wilson_interval(double successes, double trials) {
+        if (trials <= kEpsUpdate) {
+            return {0.0, 1.0};
+        }
+        const double clamped_successes = std::max(0.0, std::min(successes, trials));
+        const double p = clamped_successes / trials;
+        constexpr double kConfidenceZ = 1.959963984540054;
+        const double z2 = kConfidenceZ * kConfidenceZ;
+        const double denom = 1.0 + z2 / trials;
+        const double center = p + z2 / (2.0 * trials);
+        const double variance = (p * (1.0 - p) + z2 / (4.0 * trials)) / trials;
+        const double margin = kConfidenceZ * std::sqrt(std::max(0.0, variance));
+        const double lower = std::max(0.0, (center - margin) / denom);
+        const double upper = std::min(1.0, (center + margin) / denom);
+        return {lower, upper};
+    }
+
+    static bool atomized_intervals_overlap(
+        const std::pair<double, double> &lhs,
+        const std::pair<double, double> &rhs
+    ) {
+        return std::max(lhs.first, rhs.first) <= std::min(lhs.second, rhs.second) + kEpsUpdate;
+    }
+
+    template <typename AtomLike>
+    static bool atomized_confidence_overlap(const AtomLike &left, const AtomLike &right) {
+        if (left.row_count <= 0 || right.row_count <= 0) {
+            return false;
+        }
+        const bool lhs_multiclass = !left.class_weight.empty();
+        const bool rhs_multiclass = !right.class_weight.empty();
+        if (lhs_multiclass != rhs_multiclass) {
+            return false;
+        }
+        if (!lhs_multiclass) {
+            const double lhs_total = left.pos_weight + left.neg_weight;
+            const double rhs_total = right.pos_weight + right.neg_weight;
+            if (lhs_total <= kEpsUpdate || rhs_total <= kEpsUpdate) {
+                return false;
+            }
+            const double lhs_success = (left.pos_weight / lhs_total) * static_cast<double>(left.row_count);
+            const double rhs_success = (right.pos_weight / rhs_total) * static_cast<double>(right.row_count);
+            return atomized_intervals_overlap(
+                atomized_wilson_interval(lhs_success, static_cast<double>(left.row_count)),
+                atomized_wilson_interval(rhs_success, static_cast<double>(right.row_count)));
+        }
+
+        if (left.class_weight.size() != right.class_weight.size()) {
+            return false;
+        }
+        double lhs_total = 0.0;
+        double rhs_total = 0.0;
+        for (double value : left.class_weight) {
+            lhs_total += value;
+        }
+        for (double value : right.class_weight) {
+            rhs_total += value;
+        }
+        if (lhs_total <= kEpsUpdate || rhs_total <= kEpsUpdate) {
+            return false;
+        }
+        for (size_t cls = 0; cls < left.class_weight.size(); ++cls) {
+            const double lhs_success =
+                (left.class_weight[cls] / lhs_total) * static_cast<double>(left.row_count);
+            const double rhs_success =
+                (right.class_weight[cls] / rhs_total) * static_cast<double>(right.row_count);
+            if (!atomized_intervals_overlap(
+                    atomized_wilson_interval(lhs_success, static_cast<double>(left.row_count)),
+                    atomized_wilson_interval(rhs_success, static_cast<double>(right.row_count)))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    template <typename AtomLike>
+    static double atomized_total_variation_distance(const AtomLike &left, const AtomLike &right) {
+        const bool lhs_multiclass = !left.class_weight.empty();
+        const bool rhs_multiclass = !right.class_weight.empty();
+        if (lhs_multiclass != rhs_multiclass) {
+            return kInfinity;
+        }
+        if (!lhs_multiclass) {
+            const double lhs_total = left.pos_weight + left.neg_weight;
+            const double rhs_total = right.pos_weight + right.neg_weight;
+            if (lhs_total <= kEpsUpdate || rhs_total <= kEpsUpdate) {
+                return kInfinity;
+            }
+            const double lhs_prob = left.pos_weight / lhs_total;
+            const double rhs_prob = right.pos_weight / rhs_total;
+            return std::fabs(lhs_prob - rhs_prob);
+        }
+
+        if (left.class_weight.size() != right.class_weight.size()) {
+            return kInfinity;
+        }
+        double lhs_total = 0.0;
+        double rhs_total = 0.0;
+        for (double value : left.class_weight) {
+            lhs_total += value;
+        }
+        for (double value : right.class_weight) {
+            rhs_total += value;
+        }
+        if (lhs_total <= kEpsUpdate || rhs_total <= kEpsUpdate) {
+            return kInfinity;
+        }
+        double tv = 0.0;
+        for (size_t cls = 0; cls < left.class_weight.size(); ++cls) {
+            const double lhs_prob = left.class_weight[cls] / lhs_total;
+            const double rhs_prob = right.class_weight[cls] / rhs_total;
+            tv += std::fabs(lhs_prob - rhs_prob);
+        }
+        return 0.5 * tv;
+    }
+
+    static bool atomized_atoms_should_merge(
+        const AtomizedAtom &left,
+        const AtomizedAtom &right,
+        AtomizedCompressionRule rule
+    ) {
+        switch (rule) {
+            case AtomizedCompressionRule::kCurrent:
+                return left.teacher_prediction == right.teacher_prediction &&
+                    left.empirical_prediction == right.empirical_prediction;
+            case AtomizedCompressionRule::kPureSameClass:
+                return atom_is_empirically_pure(left) &&
+                    atom_is_empirically_pure(right) &&
+                    left.empirical_prediction == right.empirical_prediction;
+            case AtomizedCompressionRule::kProportionalProfile:
+                if (!left.class_weight.empty() && !right.class_weight.empty()) {
+                    double lhs_total = 0.0;
+                    double rhs_total = 0.0;
+                    for (double value : left.class_weight) {
+                        lhs_total += value;
+                    }
+                    for (double value : right.class_weight) {
+                        rhs_total += value;
+                    }
+                    double lhs_teacher_total = 0.0;
+                    double rhs_teacher_total = 0.0;
+                    for (double value : left.teacher_class_weight) {
+                        lhs_teacher_total += value;
+                    }
+                    for (double value : right.teacher_class_weight) {
+                        rhs_teacher_total += value;
+                    }
+                    return normalized_profile_equal(
+                               left.class_weight,
+                               right.class_weight,
+                               lhs_total,
+                               rhs_total) &&
+                        normalized_profile_equal(
+                               left.teacher_class_weight,
+                               right.teacher_class_weight,
+                               lhs_teacher_total,
+                               rhs_teacher_total);
+                }
+                return proportional_binary_profile_equal(
+                           left.pos_weight,
+                           left.neg_weight,
+                           right.pos_weight,
+                           right.neg_weight) &&
+                    proportional_binary_profile_equal(
+                           left.teacher_pos_weight,
+                           left.teacher_neg_weight,
+                           right.teacher_pos_weight,
+                           right.teacher_neg_weight);
+            case AtomizedCompressionRule::kConfidenceOverlap:
+                return atomized_confidence_overlap(left, right);
+            case AtomizedCompressionRule::kBic:
+            case AtomizedCompressionRule::kPlateau:
+            case AtomizedCompressionRule::kNone:
+                return false;
+        }
+        return false;
+    }
+
+    static double atomized_binary_neg_log_likelihood(double pos, double neg) {
+        const double total = pos + neg;
+        if (total <= kEpsUpdate) {
+            return 0.0;
+        }
+        double out = total * std::log(total);
+        if (pos > kEpsUpdate) {
+            out -= pos * std::log(pos);
+        }
+        if (neg > kEpsUpdate) {
+            out -= neg * std::log(neg);
+        }
+        return out;
+    }
+
+    static double atomized_categorical_neg_log_likelihood(const std::vector<double> &counts) {
+        double total = 0.0;
+        for (double value : counts) {
+            total += value;
+        }
+        if (total <= kEpsUpdate) {
+            return 0.0;
+        }
+        double out = total * std::log(total);
+        for (double value : counts) {
+            if (value > kEpsUpdate) {
+                out -= value * std::log(value);
+            }
+        }
+        return out;
+    }
+
+    AtomizedBlock atomized_block_from_atom(const AtomizedAtom &atom) const {
+        AtomizedBlock block;
+        block.atom_positions.push_back(atom.atom_pos);
+        block.row_count = atom.row_count;
+        block.pos_weight = atom.pos_weight;
+        block.neg_weight = atom.neg_weight;
+        block.teacher_pos_weight = atom.teacher_pos_weight;
+        block.teacher_neg_weight = atom.teacher_neg_weight;
+        block.empirical_prediction = atom.empirical_prediction;
+        block.teacher_prediction = atom.teacher_prediction;
+        block.class_weight = atom.class_weight;
+        block.teacher_class_weight = atom.teacher_class_weight;
+        return block;
+    }
+
+    void atomized_refresh_block_predictions(AtomizedBlock &block) const {
+        if (binary_mode_) {
+            block.empirical_prediction = (block.pos_weight >= block.neg_weight) ? 1 : 0;
+            block.teacher_prediction = (block.teacher_pos_weight >= block.teacher_neg_weight) ? 1 : 0;
+        } else {
+            block.empirical_prediction = argmax_index(block.class_weight);
+            block.teacher_prediction = argmax_index(block.teacher_class_weight);
+        }
+    }
+
+    AtomizedBlock atomized_merge_blocks(const AtomizedBlock &left, const AtomizedBlock &right) const {
+        AtomizedBlock merged;
+        merged.atom_positions.reserve(left.atom_positions.size() + right.atom_positions.size());
+        merged.atom_positions.insert(
+            merged.atom_positions.end(),
+            left.atom_positions.begin(),
+            left.atom_positions.end());
+        merged.atom_positions.insert(
+            merged.atom_positions.end(),
+            right.atom_positions.begin(),
+            right.atom_positions.end());
+        merged.row_count = left.row_count + right.row_count;
+        merged.pos_weight = left.pos_weight + right.pos_weight;
+        merged.neg_weight = left.neg_weight + right.neg_weight;
+        merged.teacher_pos_weight = left.teacher_pos_weight + right.teacher_pos_weight;
+        merged.teacher_neg_weight = left.teacher_neg_weight + right.teacher_neg_weight;
+        if (!left.class_weight.empty() || !right.class_weight.empty()) {
+            const size_t width = std::max(left.class_weight.size(), right.class_weight.size());
+            merged.class_weight.assign(width, 0.0);
+            merged.teacher_class_weight.assign(width, 0.0);
+            for (size_t cls = 0; cls < width; ++cls) {
+                const double left_class = (cls < left.class_weight.size()) ? left.class_weight[cls] : 0.0;
+                const double right_class = (cls < right.class_weight.size()) ? right.class_weight[cls] : 0.0;
+                const double left_teacher =
+                    (cls < left.teacher_class_weight.size()) ? left.teacher_class_weight[cls] : 0.0;
+                const double right_teacher =
+                    (cls < right.teacher_class_weight.size()) ? right.teacher_class_weight[cls] : 0.0;
+                merged.class_weight[cls] = left_class + right_class;
+                merged.teacher_class_weight[cls] = left_teacher + right_teacher;
+            }
+        }
+        atomized_refresh_block_predictions(merged);
+        return merged;
+    }
+
+    double atomized_block_neg_log_likelihood(const AtomizedBlock &block) const {
+        const double count_scale = static_cast<double>(std::max(1, n_rows_));
+        if (binary_mode_) {
+            return count_scale * atomized_binary_neg_log_likelihood(block.pos_weight, block.neg_weight);
+        }
+        return count_scale * atomized_categorical_neg_log_likelihood(block.class_weight);
+    }
+
+    int atomized_distribution_parameter_count() const {
+        return binary_mode_ ? 1 : std::max(1, n_classes_ - 1);
+    }
+
+    bool atomized_bic_merge_preferred(const AtomizedBlock &left, const AtomizedBlock &right) const {
+        const AtomizedBlock merged = atomized_merge_blocks(left, right);
+        const double complexity_weight = std::log(std::max(2, merged.row_count));
+        const double split_bic =
+            2.0 * (atomized_block_neg_log_likelihood(left) + atomized_block_neg_log_likelihood(right)) +
+            2.0 * atomized_distribution_parameter_count() * complexity_weight;
+        const double merged_bic =
+            2.0 * atomized_block_neg_log_likelihood(merged) +
+            atomized_distribution_parameter_count() * complexity_weight;
+        return merged_bic <= split_bic;
+    }
+
     double atomized_joint_impurity(const AtomizedScore &score) const {
         return score.hard_impurity + score.soft_impurity;
     }
@@ -793,24 +1192,167 @@
         block_atoms.push_back(std::move(atom));
     }
 
-    static bool has_atomized_block_compression(const std::vector<AtomizedAtom> &atoms) {
+    bool has_atomized_block_compression(
+        const std::vector<AtomizedAtom> &atoms,
+        AtomizedCompressionRule rule = AtomizedCompressionRule::kCurrent
+    ) const {
+        if (rule == AtomizedCompressionRule::kConfidenceOverlap) {
+            if (atoms.size() <= 1U) {
+                return false;
+            }
+            AtomizedBlock current = atomized_block_from_atom(atoms.front());
+            for (size_t i = 1; i < atoms.size(); ++i) {
+                const AtomizedBlock next = atomized_block_from_atom(atoms[i]);
+                if (atomized_confidence_overlap(current, next)) {
+                    return true;
+                }
+                current = next;
+            }
+            return false;
+        }
+        if (rule == AtomizedCompressionRule::kPlateau) {
+            if (atoms.size() <= 2U) {
+                return false;
+            }
+            for (size_t i = 1; i < atoms.size(); ++i) {
+                if (atomized_confidence_overlap(
+                        atomized_block_from_atom(atoms[i - 1]),
+                        atomized_block_from_atom(atoms[i]))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (rule == AtomizedCompressionRule::kBic) {
+            // BIC compression is only meant to coarsen over-segmented features,
+            // not delete the only boundary of a binary feature.
+            if (atoms.size() <= 2U) {
+                return false;
+            }
+            for (size_t i = 1; i < atoms.size(); ++i) {
+                if (atomized_bic_merge_preferred(
+                        atomized_block_from_atom(atoms[i - 1]),
+                        atomized_block_from_atom(atoms[i]))) {
+                    return true;
+                }
+            }
+            return false;
+        }
         for (size_t i = 1; i < atoms.size(); ++i) {
-            if (atoms[i - 1].teacher_prediction == atoms[i].teacher_prediction &&
-                atoms[i - 1].empirical_prediction == atoms[i].empirical_prediction) {
+            if (atomized_atoms_should_merge(atoms[i - 1], atoms[i], rule)) {
                 return true;
             }
         }
         return false;
     }
 
-    static void build_atomized_blocks_and_atoms(
+    void build_atomized_blocks_and_atoms(
         const std::vector<AtomizedAtom> &atoms,
         std::vector<AtomizedBlock> &blocks,
-        std::vector<AtomizedAtom> &block_atoms
-    ) {
+        std::vector<AtomizedAtom> &block_atoms,
+        AtomizedCompressionRule rule = AtomizedCompressionRule::kCurrent
+    ) const {
         blocks.clear();
         block_atoms.clear();
         if (atoms.empty()) {
+            return;
+        }
+
+        if (rule == AtomizedCompressionRule::kConfidenceOverlap) {
+            blocks.reserve(atoms.size());
+            block_atoms.reserve(atoms.size());
+            AtomizedBlock current = atomized_block_from_atom(atoms.front());
+            for (size_t i = 1; i < atoms.size(); ++i) {
+                const AtomizedBlock next = atomized_block_from_atom(atoms[i]);
+                if (atomized_confidence_overlap(current, next)) {
+                    current = atomized_merge_blocks(current, next);
+                    continue;
+                }
+                append_block_atom(current, static_cast<int>(blocks.size()), block_atoms);
+                blocks.push_back(std::move(current));
+                current = next;
+            }
+            append_block_atom(current, static_cast<int>(blocks.size()), block_atoms);
+            blocks.push_back(std::move(current));
+            return;
+        }
+
+        if (rule == AtomizedCompressionRule::kPlateau) {
+            std::vector<AtomizedBlock> active_blocks;
+            active_blocks.reserve(atoms.size());
+            for (const AtomizedAtom &atom : atoms) {
+                active_blocks.push_back(atomized_block_from_atom(atom));
+            }
+            while (active_blocks.size() > 2U) {
+                int best_idx = -1;
+                double best_score = kInfinity;
+                for (size_t i = 1; i < active_blocks.size(); ++i) {
+                    if (!atomized_confidence_overlap(active_blocks[i - 1], active_blocks[i])) {
+                        continue;
+                    }
+                    const double score =
+                        atomized_total_variation_distance(active_blocks[i - 1], active_blocks[i]);
+                    if (score < best_score - kEpsUpdate) {
+                        best_idx = static_cast<int>(i - 1);
+                        best_score = score;
+                    }
+                }
+                if (best_idx < 0) {
+                    break;
+                }
+                active_blocks[static_cast<size_t>(best_idx)] = atomized_merge_blocks(
+                    active_blocks[static_cast<size_t>(best_idx)],
+                    active_blocks[static_cast<size_t>(best_idx) + 1U]);
+                active_blocks.erase(active_blocks.begin() + best_idx + 1);
+            }
+
+            blocks = std::move(active_blocks);
+            block_atoms.reserve(blocks.size());
+            for (size_t i = 0; i < blocks.size(); ++i) {
+                append_block_atom(blocks[i], static_cast<int>(i), block_atoms);
+            }
+            return;
+        }
+
+        if (rule == AtomizedCompressionRule::kBic) {
+            std::vector<AtomizedBlock> active_blocks;
+            active_blocks.reserve(atoms.size());
+            for (const AtomizedAtom &atom : atoms) {
+                active_blocks.push_back(atomized_block_from_atom(atom));
+            }
+            while (active_blocks.size() > 2U) {
+                int best_idx = -1;
+                double best_gain = 0.0;
+                for (size_t i = 1; i < active_blocks.size(); ++i) {
+                    const AtomizedBlock merged = atomized_merge_blocks(active_blocks[i - 1], active_blocks[i]);
+                    const double complexity_weight = std::log(std::max(2, merged.row_count));
+                    const double split_bic =
+                        2.0 * (atomized_block_neg_log_likelihood(active_blocks[i - 1]) +
+                               atomized_block_neg_log_likelihood(active_blocks[i])) +
+                        2.0 * atomized_distribution_parameter_count() * complexity_weight;
+                    const double merged_bic =
+                        2.0 * atomized_block_neg_log_likelihood(merged) +
+                        atomized_distribution_parameter_count() * complexity_weight;
+                    const double gain = split_bic - merged_bic;
+                    if (gain >= 0.0 && (best_idx < 0 || gain > best_gain)) {
+                        best_idx = static_cast<int>(i - 1);
+                        best_gain = gain;
+                    }
+                }
+                if (best_idx < 0) {
+                    break;
+                }
+                active_blocks[(size_t)best_idx] = atomized_merge_blocks(
+                    active_blocks[(size_t)best_idx],
+                    active_blocks[(size_t)best_idx + 1U]);
+                active_blocks.erase(active_blocks.begin() + best_idx + 1);
+            }
+
+            blocks = std::move(active_blocks);
+            block_atoms.reserve(blocks.size());
+            for (size_t i = 0; i < blocks.size(); ++i) {
+                append_block_atom(blocks[i], static_cast<int>(i), block_atoms);
+            }
             return;
         }
 
@@ -819,9 +1361,7 @@
         AtomizedBlock current;
         for (size_t i = 0; i < atoms.size(); ++i) {
             if (i > 0) {
-                const bool same_type =
-                    atoms[i - 1].teacher_prediction == atoms[i].teacher_prediction &&
-                    atoms[i - 1].empirical_prediction == atoms[i].empirical_prediction;
+                const bool same_type = atomized_atoms_should_merge(atoms[i - 1], atoms[i], rule);
                 if (!same_type) {
                     append_block_atom(current, (int)blocks.size(), block_atoms);
                     blocks.push_back(std::move(current));

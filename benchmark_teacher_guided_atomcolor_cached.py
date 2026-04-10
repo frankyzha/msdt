@@ -177,7 +177,7 @@ def build_cache(
         bagging_fraction=1.0,
         bagging_freq=0,
         min_data_in_bin=1,
-        min_data_in_leaf=2,
+        min_data_in_leaf=int(min_samples_leaf),
         lambda_l2=0.0,
         early_stopping_rounds=100,
         num_threads=int(lgb_num_threads),

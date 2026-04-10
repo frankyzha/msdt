@@ -641,6 +641,7 @@ def _fit_msplit_model(
         max_bins=1024,
         min_samples_leaf=int(derived_min_child),
         min_data_in_leaf=int(derived_min_child),
+        lambda_l2=0.0,
         random_state=int(seed),
         collect_teacher_logit=True,
     )

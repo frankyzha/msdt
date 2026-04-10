@@ -1567,10 +1567,26 @@
             }
         }
 
-        prepared.has_block_compression = has_atomized_block_compression(prepared.atoms);
+        const AtomizedCompressionRule compression_rule = atomized_compression_rule();
+        prepared.has_block_compression = has_atomized_block_compression(prepared.atoms, compression_rule);
         if (prepared.has_block_compression) {
-            build_atomized_blocks_and_atoms(prepared.atoms, prepared.blocks, prepared.block_atoms);
+            build_atomized_blocks_and_atoms(
+                prepared.atoms,
+                prepared.blocks,
+                prepared.block_atoms,
+                compression_rule);
             prepared.has_block_compression = prepared.block_atoms.size() < prepared.atoms.size();
+            if (prepared.has_block_compression) {
+                const long long atom_count = static_cast<long long>(prepared.atoms.size());
+                const long long block_count = static_cast<long long>(prepared.block_atoms.size());
+                ++telemetry.atomized_compression_features_applied;
+                if (block_count == 1LL) {
+                    ++telemetry.atomized_compression_features_collapsed_to_single_block;
+                }
+                telemetry.atomized_compression_atoms_before_total += atom_count;
+                telemetry.atomized_compression_blocks_after_total += block_count;
+                telemetry.atomized_compression_atoms_merged_total += atom_count - block_count;
+            }
         }
         bump_count_histogram(
             telemetry.atomized_feature_block_atom_count_histogram,
@@ -1587,6 +1603,7 @@
         prepared.coarse_by_groups.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
         prepared.coarse_by_groups_hardloss.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
 
+        const bool use_dual_families = atomized_use_dual_families();
         bool any_feasible = false;
         for (int groups = 2; groups <= prepared.q_effective; ++groups) {
             AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
@@ -1596,18 +1613,23 @@
                 mu_node,
                 AtomizedObjectiveMode::kImpurity,
                 compute_branch_hard_losses);
-            AtomizedCoarseCandidate hardloss_coarse = prepare_folded_family_coarse(
-                feature,
-                prepared,
-                groups,
-                mu_node,
-                AtomizedObjectiveMode::kHardLoss,
-                compute_branch_hard_losses);
-            if (!coarse.candidate.feasible && !hardloss_coarse.candidate.feasible) {
+            AtomizedCoarseCandidate hardloss_coarse;
+            if (use_dual_families) {
+                hardloss_coarse = prepare_folded_family_coarse(
+                    feature,
+                    prepared,
+                    groups,
+                    mu_node,
+                    AtomizedObjectiveMode::kHardLoss,
+                    compute_branch_hard_losses);
+            }
+            if (!coarse.candidate.feasible && (!use_dual_families || !hardloss_coarse.candidate.feasible)) {
                 continue;
             }
             prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
-            prepared.coarse_by_groups_hardloss[(size_t)groups] = std::move(hardloss_coarse);
+            if (use_dual_families) {
+                prepared.coarse_by_groups_hardloss[(size_t)groups] = std::move(hardloss_coarse);
+            }
             ++telemetry.atomized_coarse_candidates;
             any_feasible = true;
         }

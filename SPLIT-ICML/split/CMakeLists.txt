@@ -7,10 +7,6 @@ set(CMAKE_CXX_STANDARD 20)
 
 option(SPLIT_ENABLE_PGO_GENERATE "Build with profile generation enabled." OFF)
 option(SPLIT_ENABLE_PGO_USE "Build with profile use enabled." OFF)
-option(
-  SPLIT_USE_BACKUP_SELECTOR
-  "Compile the Python module with the nonlinear MSPLIT selector instead of the linear selector."
-  OFF)
 set(SPLIT_PGO_DIR "" CACHE PATH "Directory for compiler profile data.")
 
 if (SPLIT_ENABLE_PGO_GENERATE AND SPLIT_ENABLE_PGO_USE)
@@ -76,9 +72,7 @@ if (SKBUILD)
   python_add_library(${TARGET} MODULE ${SOURCE_FILES} WITH_SOABI)
   target_link_libraries(${TARGET} PRIVATE pybind11::module)
   target_include_directories(${TARGET} PUBLIC src/libgosdt/include/)
-  if (SPLIT_USE_BACKUP_SELECTOR)
-    target_compile_definitions(${TARGET} PRIVATE MSPLIT_USE_BACKUP_SELECTOR)
-  endif()
+  target_compile_definitions(${TARGET} PRIVATE MSPLIT_USE_BACKUP_SELECTOR)
   set_target_properties(${TARGET} PROPERTIES INSTALL_RPATH "@loader_path")
   set_target_properties(${TARGET} PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
   configure_local_release_optimizations(${TARGET})
@@ -100,9 +94,7 @@ file(GLOB_RECURSE SOURCE_FILES src/libgosdt/src/*.cpp src/cli.cpp)
 list(FILTER SOURCE_FILES EXCLUDE REGEX "src/libgosdt/src/(msplit\\.cpp|msplit_(debug|exact_lazy|atomized|atomized_support|atomized_heuristic|linear|nonlinear)\\.cpp|_msplit_atomized_exact_backup\\.cpp|_msplit_atomized_weird_backup\\.cpp)$")
 add_executable(${CLI_TARGET} ${SOURCE_FILES})
 target_include_directories(${CLI_TARGET} PUBLIC src/libgosdt/include/)
-if (SPLIT_USE_BACKUP_SELECTOR)
-  target_compile_definitions(${CLI_TARGET} PRIVATE MSPLIT_USE_BACKUP_SELECTOR)
-endif()
+target_compile_definitions(${CLI_TARGET} PRIVATE MSPLIT_USE_BACKUP_SELECTOR)
 configure_local_release_optimizations(${CLI_TARGET})
 
 #

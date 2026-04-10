@@ -140,7 +140,7 @@ def main() -> None:
         bagging_freq=0,
         max_depth=-1,
         min_data_in_bin=1,
-        min_data_in_leaf=2,
+        min_data_in_leaf=int(args.min_child_size),
         lambda_l2=0.0,
         early_stopping_rounds=int(args.binner_early_stop),
         num_threads=int(args.binner_threads),

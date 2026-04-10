@@ -724,7 +724,10 @@ def _parse_args(pipeline: PipelineSpec) -> argparse.Namespace:
         args.lgb_ensemble_bagging_fraction = min(1.0, max(1e-6, float(args.lgb_ensemble_bagging_fraction)))
         args.lgb_ensemble_bagging_freq = max(0, int(args.lgb_ensemble_bagging_freq))
         args.lgb_threshold_dedup_eps = max(0.0, float(args.lgb_threshold_dedup_eps))
-        args.lgb_min_data_in_leaf = max(2, int(getattr(args, "lgb_min_data_in_leaf", 2)))
+        args.lgb_min_data_in_leaf = max(
+            2,
+            int(getattr(args, "lgb_min_data_in_leaf", getattr(args, "min_child_size", 2))),
+        )
         args.lgb_lambda_l2 = max(0.0, float(getattr(args, "lgb_lambda_l2", 0.0)))
 
     return args
@@ -1891,7 +1894,9 @@ def _resolve_trial_params(
         params["lgb_bagging_freq"] = int(getattr(args, "lgb_bagging_freq", 0))
         params["lgb_max_depth"] = -1
         params["lgb_min_data_in_bin"] = int(getattr(args, "lgb_min_data_in_bin", 1))
-        params["lgb_min_data_in_leaf"] = int(getattr(args, "lgb_min_data_in_leaf", 2))
+        params["lgb_min_data_in_leaf"] = int(
+            getattr(args, "lgb_min_data_in_leaf", getattr(args, "min_child_size", 2))
+        )
         params["lgb_lambda_l2"] = float(getattr(args, "lgb_lambda_l2", 0.0))
     if param_overrides:
         for key, value in param_overrides.items():
@@ -1976,7 +1981,12 @@ def _resolve_trial_params(
         min_data_in_leaf_choices = _lgb_min_data_in_leaf_choices(int(params["min_child_size"]))
         params["lgb_min_data_in_leaf"] = int(
             _nearest_choice(
-                int(params.get("lgb_min_data_in_leaf", getattr(args, "lgb_min_data_in_leaf", 2))),
+                int(
+                    params.get(
+                        "lgb_min_data_in_leaf",
+                        getattr(args, "lgb_min_data_in_leaf", params["min_child_size"]),
+                    )
+                ),
                 min_data_in_leaf_choices,
             )
         )
@@ -2110,7 +2120,9 @@ def _sanitize_optuna_params(
     lgb_bagging_fraction = float(params.get("lgb_bagging_fraction", float(getattr(args, "lgb_bagging_fraction", 1.0))))
     lgb_bagging_freq = int(params.get("lgb_bagging_freq", int(getattr(args, "lgb_bagging_freq", 0))))
     lgb_min_data_in_bin = int(params.get("lgb_min_data_in_bin", int(getattr(args, "lgb_min_data_in_bin", 1))))
-    lgb_min_data_in_leaf = int(params.get("lgb_min_data_in_leaf", int(getattr(args, "lgb_min_data_in_leaf", 2))))
+    lgb_min_data_in_leaf = int(
+        params.get("lgb_min_data_in_leaf", int(getattr(args, "lgb_min_data_in_leaf", min_child_size)))
+    )
     lgb_lambda_l2 = float(params.get("lgb_lambda_l2", float(getattr(args, "lgb_lambda_l2", 0.0))))
 
     reg = max(0.0, min(reg, float(limits["reg_max"])))

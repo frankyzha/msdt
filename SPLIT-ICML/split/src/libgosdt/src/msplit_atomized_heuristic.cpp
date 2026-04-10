@@ -7,6 +7,7 @@
     ) const {
         std::vector<AtomizedCandidate> selected;
         selected.reserve(3);
+        const bool use_dual_families = atomized_use_dual_families();
         if (groups < 2 ||
             groups >= (int)prepared.coarse_by_groups.size() ||
             groups >= (int)prepared.coarse_by_groups_hardloss.size()) {
@@ -14,14 +15,31 @@
         }
 
         const AtomizedCoarseCandidate &impurity_coarse = prepared.coarse_by_groups[(size_t)groups];
-        const AtomizedCoarseCandidate &hardloss_coarse = prepared.coarse_by_groups_hardloss[(size_t)groups];
-        const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
-            prepared.atoms,
-            prepared.atom_prefix,
-            feature,
-            groups);
-        const AtomizedCandidate *impurity_raw_seed = &raw_seed_pair.impurity;
-        const AtomizedCandidate *misclassification_raw_seed = &raw_seed_pair.misclassification;
+        const AtomizedCoarseCandidate *hardloss_coarse_ptr =
+            use_dual_families ? &prepared.coarse_by_groups_hardloss[(size_t)groups] : nullptr;
+        AtomizedCandidate impurity_raw_seed;
+        AtomizedCandidate misclassification_raw_seed_storage;
+        const AtomizedCandidate *impurity_raw_seed_ptr = nullptr;
+        const AtomizedCandidate *misclassification_raw_seed = nullptr;
+        if (use_dual_families) {
+            const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
+                prepared.atoms,
+                prepared.atom_prefix,
+                feature,
+                groups);
+            impurity_raw_seed = raw_seed_pair.impurity;
+            misclassification_raw_seed_storage = raw_seed_pair.misclassification;
+            impurity_raw_seed_ptr = &impurity_raw_seed;
+            misclassification_raw_seed = &misclassification_raw_seed_storage;
+        } else {
+            impurity_raw_seed = solve_atomized_geometry_family(
+                prepared.atoms,
+                prepared.atom_prefix,
+                feature,
+                groups,
+                AtomizedObjectiveMode::kImpurity);
+            impurity_raw_seed_ptr = &impurity_raw_seed;
+        }
         AtomizedCandidate impurity = nominate_folded_family_candidate(
             feature,
             prepared,
@@ -30,13 +48,21 @@
             impurity_coarse,
             AtomizedObjectiveMode::kImpurity,
             compute_branch_hard_losses,
-            impurity_raw_seed);
+            impurity_raw_seed_ptr);
+        if (!use_dual_families) {
+            if (impurity.feasible) {
+                ++const_cast<Solver *>(this)->debr_final_geo_wins_;
+                selected.push_back(std::move(impurity));
+            }
+            return selected;
+        }
+
         AtomizedCandidate misclassification = nominate_folded_family_candidate(
             feature,
             prepared,
             groups,
             mu_node,
-            hardloss_coarse,
+            *hardloss_coarse_ptr,
             AtomizedObjectiveMode::kHardLoss,
             compute_branch_hard_losses,
             misclassification_raw_seed);
@@ -231,10 +257,12 @@
 
             for (size_t groups = 2; groups < prepared_ref.coarse_by_groups.size(); ++groups) {
                 const AtomizedCoarseCandidate &impurity_coarse = prepared_ref.coarse_by_groups[groups];
-                const AtomizedCoarseCandidate &hardloss_coarse =
-                    prepared_ref.coarse_by_groups_hardloss[groups];
                 const bool impurity_feasible = impurity_coarse.candidate.feasible;
-                const bool hardloss_feasible = hardloss_coarse.candidate.feasible;
+                const bool use_dual_families = atomized_use_dual_families();
+                const bool hardloss_feasible =
+                    use_dual_families &&
+                    groups < prepared_ref.coarse_by_groups_hardloss.size() &&
+                    prepared_ref.coarse_by_groups_hardloss[groups].candidate.feasible;
                 if (!impurity_feasible && !hardloss_feasible) {
                     continue;
                 }
@@ -255,6 +283,8 @@
                 }
 
                 if (hardloss_feasible) {
+                    const AtomizedCoarseCandidate &hardloss_coarse =
+                        prepared_ref.coarse_by_groups_hardloss[groups];
                     const double score =
                         atomized_score_proxy(
                             hardloss_coarse.candidate.score,
@@ -717,16 +747,101 @@
             return lhs_idx < rhs_idx;
         };
 
+        auto nominee_family_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
+            const NomineeEval &lhs = nominee_evals[lhs_idx];
+            const NomineeEval &rhs = nominee_evals[rhs_idx];
+            const double lhs_primary = atomized_candidate_primary_objective(lhs.candidate);
+            const double rhs_primary = atomized_candidate_primary_objective(rhs.candidate);
+            if (lhs_primary < rhs_primary - kEpsUpdate) {
+                return true;
+            }
+            if (rhs_primary < lhs_primary - kEpsUpdate) {
+                return false;
+            }
+            return nominee_prefer(lhs_idx, rhs_idx);
+        };
+
+        auto resolve_exactify_budget = [&](size_t candidate_count) -> size_t {
+            if (candidate_count == 0U) {
+                return 0U;
+            }
+            if (exactify_top_k_ > 0) {
+                return std::max<size_t>(
+                    1U,
+                    std::min(candidate_count, static_cast<size_t>(exactify_top_k_)));
+            }
+            const size_t budget = static_cast<size_t>(
+                std::ceil(std::sqrt(static_cast<double>(candidate_count))));
+            return std::max<size_t>(1U, std::min(candidate_count, budget));
+        };
+
         std::vector<size_t> alive_indices;
         alive_indices.reserve(nominee_evals.size());
+        size_t exactify_budget_count = 0U;
         if (exact_mode) {
-            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                alive_indices.push_back(idx);
+            const bool dual_family_buckets = atomized_use_dual_families();
+            if (dual_family_buckets) {
+                std::vector<size_t> impurity_indices;
+                std::vector<size_t> hardloss_indices;
+                impurity_indices.reserve(nominee_evals.size());
+                hardloss_indices.reserve(nominee_evals.size());
+                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                    if (nominee_evals[idx].candidate.hard_loss_mode) {
+                        hardloss_indices.push_back(idx);
+                    } else {
+                        impurity_indices.push_back(idx);
+                    }
+                }
+
+                std::stable_sort(
+                    impurity_indices.begin(),
+                    impurity_indices.end(),
+                    nominee_family_prefer);
+                std::stable_sort(
+                    hardloss_indices.begin(),
+                    hardloss_indices.end(),
+                    nominee_family_prefer);
+
+                std::vector<unsigned char> selected_mask(nominee_evals.size(), 0U);
+                auto append_bucket_prefix = [&](const std::vector<size_t> &bucket) {
+                    const size_t bucket_budget = resolve_exactify_budget(bucket.size());
+                    exactify_budget_count += bucket_budget;
+                    for (size_t order = 0; order < bucket_budget; ++order) {
+                        const size_t idx = bucket[order];
+                        if (!selected_mask[idx]) {
+                            selected_mask[idx] = 1U;
+                            alive_indices.push_back(idx);
+                        }
+                    }
+                };
+                append_bucket_prefix(impurity_indices);
+                append_bucket_prefix(hardloss_indices);
+
+                std::vector<size_t> deferred_indices;
+                deferred_indices.reserve(nominee_evals.size() - alive_indices.size());
+                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                    if (!selected_mask[idx]) {
+                        deferred_indices.push_back(idx);
+                    }
+                }
+                std::stable_sort(
+                    deferred_indices.begin(),
+                    deferred_indices.end(),
+                    nominee_prefer);
+                alive_indices.insert(
+                    alive_indices.end(),
+                    deferred_indices.begin(),
+                    deferred_indices.end());
+            } else {
+                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                    alive_indices.push_back(idx);
+                }
+                std::stable_sort(
+                    alive_indices.begin(),
+                    alive_indices.end(),
+                    nominee_prefer);
+                exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
             }
-            std::stable_sort(
-                alive_indices.begin(),
-                alive_indices.end(),
-                nominee_prefer);
         } else {
             size_t best_idx = 0U;
             for (size_t idx = 1; idx < nominee_evals.size(); ++idx) {
@@ -735,6 +850,7 @@
                 }
             }
             alive_indices.push_back(best_idx);
+            exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
         }
 
         std::vector<double> node_candidate_upper_bounds;
@@ -767,20 +883,6 @@
             node_candidate_components.push_back((long long)score.components);
         }
         record_node_scale(stats);
-        auto resolve_exactify_budget = [&](size_t candidate_count) -> size_t {
-            if (candidate_count == 0U) {
-                return 0U;
-            }
-            if (exactify_top_k_ > 0) {
-                return std::max<size_t>(
-                    1U,
-                    std::min(candidate_count, static_cast<size_t>(exactify_top_k_)));
-            }
-            const size_t budget = static_cast<size_t>(
-                std::ceil(std::sqrt(static_cast<double>(candidate_count))));
-            return std::max<size_t>(1U, std::min(candidate_count, budget));
-        };
-        const size_t exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
         telemetry.nominee_elbow_prefix_total += static_cast<long long>(exactify_budget_count);
         telemetry.nominee_elbow_prefix_max = std::max(
             telemetry.nominee_elbow_prefix_max,
