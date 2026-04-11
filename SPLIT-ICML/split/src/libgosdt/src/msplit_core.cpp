@@ -839,6 +839,7 @@ class Solver {
     bool sample_weight_uniform_ = false;
     std::vector<double> teacher_prob_;
     std::vector<double> teacher_prob_flat_;
+    std::vector<int> teacher_prediction_;
     bool teacher_available_ = false;
     int n_classes_ = 0;
     bool binary_mode_ = true;
@@ -1257,6 +1258,7 @@ class Solver {
     void initialize_teacher_prob() {
         teacher_prob_.assign((size_t)n_rows_, 0.5);
         teacher_prob_flat_.clear();
+        teacher_prediction_.assign((size_t)n_rows_, 0);
         teacher_available_ = !teacher_logit_raw_.empty();
         if (!teacher_available_) {
             return;
@@ -1264,7 +1266,9 @@ class Solver {
         if (teacher_class_count_ <= 1) {
             for (int row = 0; row < n_rows_; ++row) {
                 const double logit = teacher_logit_raw_[(size_t)row];
-                teacher_prob_[(size_t)row] = std::isfinite(logit) ? sigmoid(logit) : 0.5;
+                const double prob = std::isfinite(logit) ? sigmoid(logit) : 0.5;
+                teacher_prob_[(size_t)row] = prob;
+                teacher_prediction_[(size_t)row] = (prob >= 0.5) ? 1 : 0;
             }
             return;
         }
@@ -1278,6 +1282,7 @@ class Solver {
                     teacher_prob_[(size_t)row] = 0.5;
                     teacher_prob_flat_[base] = 0.5;
                     teacher_prob_flat_[base + 1U] = 0.5;
+                    teacher_prediction_[(size_t)row] = 1;
                     continue;
                 }
                 const double safe0 = std::isfinite(logit0) ? logit0 : -kInfinity;
@@ -1290,6 +1295,7 @@ class Solver {
                 teacher_prob_[(size_t)row] = pos_prob;
                 teacher_prob_flat_[base] = 1.0 - pos_prob;
                 teacher_prob_flat_[base + 1U] = pos_prob;
+                teacher_prediction_[(size_t)row] = (pos_prob >= 0.5) ? 1 : 0;
             }
             return;
         }
@@ -1308,6 +1314,7 @@ class Solver {
                 for (int cls = 0; cls < teacher_class_count_; ++cls) {
                     teacher_prob_flat_[base + static_cast<size_t>(cls)] = uniform;
                 }
+                teacher_prediction_[(size_t)row] = 0;
                 continue;
             }
             double sum_exp = 0.0;
@@ -1322,12 +1329,21 @@ class Solver {
                 for (int cls = 0; cls < teacher_class_count_; ++cls) {
                     teacher_prob_flat_[base + static_cast<size_t>(cls)] = uniform;
                 }
+                teacher_prediction_[(size_t)row] = 0;
                 continue;
             }
             const double inv_sum = 1.0 / sum_exp;
+            int best_cls = 0;
+            double best_prob = -1.0;
             for (int cls = 0; cls < teacher_class_count_; ++cls) {
-                teacher_prob_flat_[base + static_cast<size_t>(cls)] *= inv_sum;
+                const double prob = teacher_prob_flat_[base + static_cast<size_t>(cls)] * inv_sum;
+                teacher_prob_flat_[base + static_cast<size_t>(cls)] = prob;
+                if (prob > best_prob) {
+                    best_prob = prob;
+                    best_cls = cls;
+                }
             }
+            teacher_prediction_[(size_t)row] = best_cls;
         }
     }
 
@@ -1450,6 +1466,7 @@ class Solver {
         std::vector<double> class_weight;
         double sum_weight = 0.0;
         double sum_weight_sq = 0.0;
+        double reference_error_weight = 0.0;
         int prediction = 0;
         bool pure = true;
         double leaf_objective = 0.0;
@@ -1465,6 +1482,9 @@ class Solver {
                 const double weight = sample_weight_[(size_t)idx];
                 out.sum_weight += weight;
                 out.sum_weight_sq += weight * weight;
+                if (teacher_available_ && teacher_prediction_[(size_t)idx] != label) {
+                    out.reference_error_weight += weight;
+                }
                 if (label == 1) {
                     ++out.pos_count;
                     out.pos_weight += weight;
@@ -1491,6 +1511,9 @@ class Solver {
             const double weight = sample_weight_[(size_t)idx];
             out.sum_weight += weight;
             out.sum_weight_sq += weight * weight;
+            if (teacher_available_ && teacher_prediction_[(size_t)idx] != label) {
+                out.reference_error_weight += weight;
+            }
             ++out.class_counts[(size_t)label];
             out.class_weight[(size_t)label] += weight;
             if (first_label < 0) {

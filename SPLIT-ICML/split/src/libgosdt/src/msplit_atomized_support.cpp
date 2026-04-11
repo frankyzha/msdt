@@ -979,23 +979,6 @@
             selected.push_back(std::move(impurity));
             return selected;
         }
-
-        if (atomized_candidate_dominates(impurity, misclassification)) {
-            ++telemetry.family1_selected_by_dominance;
-            ++telemetry.debr_final_geo_wins;
-            ++telemetry.atomized_coarse_pruned_candidates;
-            selected.push_back(std::move(impurity));
-            return selected;
-        }
-        if (atomized_candidate_dominates(misclassification, impurity)) {
-            ++telemetry.family2_selected_by_dominance;
-            ++telemetry.debr_final_block_wins;
-            ++telemetry.atomized_coarse_pruned_candidates;
-            selected.push_back(std::move(misclassification));
-            return selected;
-        }
-
-        ++telemetry.family_metric_disagreement;
         ++telemetry.family_sent_both;
         selected.push_back(std::move(impurity));
         selected.push_back(std::move(misclassification));

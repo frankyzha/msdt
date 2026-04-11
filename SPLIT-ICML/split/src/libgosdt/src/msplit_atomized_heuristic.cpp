@@ -470,6 +470,10 @@
 
         const SubproblemStats stats = compute_subproblem_stats(indices);
         auto [leaf_objective, leaf_tree] = leaf_solution(stats);
+        const double reference_floor_leaf =
+            teacher_available_
+                ? (stats.reference_error_weight + regularization_)
+                : -kInfinity;
         if (depth_remaining <= 0) {
             record_node_scale(stats);
             record_empty_candidate_curves();
@@ -523,6 +527,26 @@
                 0U,
                 solved.objective,
                 solved.objective,
+                0U);
+            cache_store(state_key, solved, depth_remaining);
+            return solved;
+        }
+        if (above_lookahead && teacher_available_ &&
+            reference_floor_leaf + kEpsUpdate >= leaf_objective) {
+            record_node_scale(stats);
+            record_empty_candidate_curves();
+            GreedyResult solved{leaf_objective, leaf_tree};
+            trace_greedy_snapshot(
+                "return_reference_leaf",
+                depth_remaining,
+                indices.size(),
+                0U,
+                0U,
+                0U,
+                0U,
+                0U,
+                solved.objective,
+                reference_floor_leaf,
                 0U);
             cache_store(state_key, solved, depth_remaining);
             return solved;
@@ -661,6 +685,11 @@
             return solved;
         }
 
+        auto nominee_hard_ceiling = [&](const NomineeEval &eval) {
+            return eval.candidate.score.hard_loss +
+                regularization_ * static_cast<double>(eval.candidate.groups);
+        };
+
         auto nominee_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
             const NomineeEval &lhs = nominee_evals[lhs_idx];
             const NomineeEval &rhs = nominee_evals[rhs_idx];
@@ -676,6 +705,23 @@
             if (rhs_impurity < lhs_impurity - kEpsUpdate) {
                 return false;
             }
+            const double lhs_hard_ceiling = nominee_hard_ceiling(lhs);
+            const double rhs_hard_ceiling = nominee_hard_ceiling(rhs);
+            if (lhs_hard_ceiling < rhs_hard_ceiling - kEpsUpdate) {
+                return true;
+            }
+            if (rhs_hard_ceiling < lhs_hard_ceiling - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.candidate.score.boundary_penalty < rhs.candidate.score.boundary_penalty - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.candidate.score.boundary_penalty < lhs.candidate.score.boundary_penalty - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.candidate.score.components != rhs.candidate.score.components) {
+                return lhs.candidate.score.components < rhs.candidate.score.components;
+            }
             if (lhs.feature != rhs.feature) {
                 return lhs.feature < rhs.feature;
             }
@@ -683,20 +729,6 @@
                 return lhs.groups < rhs.groups;
             }
             return lhs_idx < rhs_idx;
-        };
-
-        auto nominee_family_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
-            const NomineeEval &lhs = nominee_evals[lhs_idx];
-            const NomineeEval &rhs = nominee_evals[rhs_idx];
-            const double lhs_primary = atomized_candidate_primary_objective(lhs.candidate);
-            const double rhs_primary = atomized_candidate_primary_objective(rhs.candidate);
-            if (lhs_primary < rhs_primary - kEpsUpdate) {
-                return true;
-            }
-            if (rhs_primary < lhs_primary - kEpsUpdate) {
-                return false;
-            }
-            return nominee_prefer(lhs_idx, rhs_idx);
         };
 
         auto resolve_exactify_budget = [&](size_t candidate_count) -> size_t {
@@ -712,100 +744,139 @@
                 std::ceil(std::sqrt(static_cast<double>(candidate_count))));
             return std::max<size_t>(1U, std::min(candidate_count, budget));
         };
+        auto nominee_family_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
+            const NomineeEval &lhs = nominee_evals[lhs_idx];
+            const NomineeEval &rhs = nominee_evals[rhs_idx];
+            const AtomizedObjectiveMode lhs_mode = lhs.candidate.hard_loss_mode
+                ? AtomizedObjectiveMode::kHardLoss
+                : AtomizedObjectiveMode::kImpurity;
+            const AtomizedObjectiveMode rhs_mode = rhs.candidate.hard_loss_mode
+                ? AtomizedObjectiveMode::kHardLoss
+                : AtomizedObjectiveMode::kImpurity;
+            const double lhs_primary = atomized_primary_objective(lhs.candidate.score, lhs_mode);
+            const double rhs_primary = atomized_primary_objective(rhs.candidate.score, rhs_mode);
+            if (lhs_primary < rhs_primary - kEpsUpdate) {
+                return true;
+            }
+            if (rhs_primary < lhs_primary - kEpsUpdate) {
+                return false;
+            }
+            return nominee_prefer(lhs_idx, rhs_idx);
+        };
+
+        double search_upper_bound = leaf_objective;
+        for (const NomineeEval &eval : nominee_evals) {
+            if (eval.candidate.hard_loss_mode) {
+                search_upper_bound = std::min(search_upper_bound, nominee_hard_ceiling(eval));
+            }
+        }
+
+        if (above_lookahead) {
+            long long impurity_before = 0;
+            long long hardloss_before = 0;
+            for (const NomineeEval &eval : nominee_evals) {
+                if (eval.candidate.hard_loss_mode) {
+                    ++hardloss_before;
+                } else {
+                    ++impurity_before;
+                }
+            }
+            above_lookahead_impurity_bucket_before_prune_total_ += impurity_before;
+            above_lookahead_hardloss_bucket_before_prune_total_ += hardloss_before;
+        }
+
+        if (teacher_available_ && above_lookahead) {
+            std::vector<NomineeEval> reference_survivors;
+            reference_survivors.reserve(nominee_evals.size());
+            size_t early_stop_idx = std::numeric_limits<size_t>::max();
+            long long reference_pruned = 0;
+            for (NomineeEval &eval : nominee_evals) {
+                const double candidate_floor =
+                    stats.reference_error_weight +
+                    regularization_ * static_cast<double>(eval.groups);
+                if (candidate_floor + kEpsUpdate >= search_upper_bound) {
+                    ++reference_pruned;
+                    continue;
+                }
+                reference_survivors.push_back(std::move(eval));
+                const size_t survivor_idx = reference_survivors.size() - 1U;
+                if (nominee_hard_ceiling(reference_survivors.back()) <= candidate_floor + kEpsUpdate) {
+                    if (early_stop_idx == std::numeric_limits<size_t>::max()) {
+                        early_stop_idx = survivor_idx;
+                    } else {
+                        const double lhs_ceiling = nominee_hard_ceiling(reference_survivors[survivor_idx]);
+                        const double rhs_ceiling = nominee_hard_ceiling(reference_survivors[early_stop_idx]);
+                        if (lhs_ceiling < rhs_ceiling - kEpsUpdate ||
+                            (std::abs(lhs_ceiling - rhs_ceiling) <= kEpsUpdate &&
+                             (reference_survivors[survivor_idx].feature < reference_survivors[early_stop_idx].feature ||
+                              (reference_survivors[survivor_idx].feature == reference_survivors[early_stop_idx].feature &&
+                               (reference_survivors[survivor_idx].groups < reference_survivors[early_stop_idx].groups ||
+                                (reference_survivors[survivor_idx].groups == reference_survivors[early_stop_idx].groups &&
+                                 reference_survivors[survivor_idx].candidate.score.components <
+                                     reference_survivors[early_stop_idx].candidate.score.components)))))) {
+                            early_stop_idx = survivor_idx;
+                        }
+                    }
+                }
+            }
+            nominee_evals.swap(reference_survivors);
+            if (early_stop_idx != std::numeric_limits<size_t>::max()) {
+                NomineeEval winner = std::move(nominee_evals[early_stop_idx]);
+                nominee_evals.clear();
+                nominee_evals.push_back(std::move(winner));
+            }
+            if (above_lookahead) {
+                long long impurity_after = 0;
+                long long hardloss_after = 0;
+                for (const NomineeEval &eval : nominee_evals) {
+                    if (eval.candidate.hard_loss_mode) {
+                        ++hardloss_after;
+                    } else {
+                        ++impurity_after;
+                    }
+                }
+                above_lookahead_impurity_bucket_after_prune_total_ += impurity_after;
+                above_lookahead_hardloss_bucket_after_prune_total_ += hardloss_after;
+            }
+            telemetry.atomized_coarse_pruned_candidates += reference_pruned;
+        } else if (above_lookahead) {
+            long long impurity_after = 0;
+            long long hardloss_after = 0;
+            for (const NomineeEval &eval : nominee_evals) {
+                if (eval.candidate.hard_loss_mode) {
+                    ++hardloss_after;
+                } else {
+                    ++impurity_after;
+                }
+            }
+            above_lookahead_impurity_bucket_after_prune_total_ += impurity_after;
+            above_lookahead_hardloss_bucket_after_prune_total_ += hardloss_after;
+        }
+
+        if (nominee_evals.empty()) {
+            record_node_scale(stats);
+            record_empty_candidate_curves();
+            GreedyResult solved{leaf_objective, leaf_tree};
+            trace_greedy_snapshot(
+                "return_reference_pruned",
+                depth_remaining,
+                indices.size(),
+                preserved_feature_count,
+                static_cast<unsigned long long>(surviving_candidate_evals.size()),
+                0U,
+                0U,
+                0U,
+                solved.objective,
+                search_upper_bound,
+                0U);
+            cache_store(state_key, solved, depth_remaining);
+            return solved;
+        }
 
         std::vector<size_t> alive_indices;
         alive_indices.reserve(nominee_evals.size());
         size_t exactify_budget_count = 0U;
         if (exact_mode) {
-            std::vector<size_t> impurity_indices;
-            std::vector<size_t> hardloss_indices;
-            impurity_indices.reserve(nominee_evals.size());
-            hardloss_indices.reserve(nominee_evals.size());
-            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                if (nominee_evals[idx].candidate.hard_loss_mode) {
-                    hardloss_indices.push_back(idx);
-                } else {
-                    impurity_indices.push_back(idx);
-                }
-            }
-            above_lookahead_impurity_bucket_before_prune_total_ +=
-                static_cast<long long>(impurity_indices.size());
-            above_lookahead_hardloss_bucket_before_prune_total_ +=
-                static_cast<long long>(hardloss_indices.size());
-
-            auto prune_bucket_by_proxy = [&](std::vector<size_t> &bucket) {
-                if (bucket.empty()) {
-                    return;
-                }
-                const bool hard_loss_bucket =
-                    nominee_evals[bucket.front()].candidate.hard_loss_mode;
-                double best_bucket_proxy = kInfinity;
-                for (size_t idx : bucket) {
-                    best_bucket_proxy = std::min(best_bucket_proxy, nominee_evals[idx].cheap_score);
-                }
-                if (!std::isfinite(best_bucket_proxy)) {
-                    return;
-                }
-                const double bucket_slack = hard_loss_bucket ? (2.0 * mu_node) : mu_node;
-                const double bucket_cutoff = best_bucket_proxy + bucket_slack + kEpsUpdate;
-                std::vector<size_t> survivors;
-                survivors.reserve(bucket.size());
-                for (size_t idx : bucket) {
-                    if (nominee_evals[idx].cheap_score <= bucket_cutoff) {
-                        survivors.push_back(idx);
-                    }
-                }
-                bucket.swap(survivors);
-            };
-
-            prune_bucket_by_proxy(impurity_indices);
-            prune_bucket_by_proxy(hardloss_indices);
-            above_lookahead_impurity_bucket_after_prune_total_ +=
-                static_cast<long long>(impurity_indices.size());
-            above_lookahead_hardloss_bucket_after_prune_total_ +=
-                static_cast<long long>(hardloss_indices.size());
-
-            std::stable_sort(
-                impurity_indices.begin(),
-                impurity_indices.end(),
-                nominee_family_prefer);
-            std::stable_sort(
-                hardloss_indices.begin(),
-                hardloss_indices.end(),
-                nominee_family_prefer);
-
-            std::vector<unsigned char> selected_mask(nominee_evals.size(), 0U);
-            auto append_bucket_prefix = [&](const std::vector<size_t> &bucket) {
-                const size_t bucket_budget = resolve_exactify_budget(bucket.size());
-                exactify_budget_count += bucket_budget;
-                for (size_t order = 0; order < bucket_budget; ++order) {
-                    const size_t idx = bucket[order];
-                    if (!selected_mask[idx]) {
-                        selected_mask[idx] = 1U;
-                        alive_indices.push_back(idx);
-                    }
-                }
-            };
-            append_bucket_prefix(impurity_indices);
-            append_bucket_prefix(hardloss_indices);
-
-            std::vector<size_t> deferred_indices;
-            deferred_indices.reserve(nominee_evals.size() - alive_indices.size());
-            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                if (!selected_mask[idx]) {
-                    deferred_indices.push_back(idx);
-                }
-            }
-            std::stable_sort(
-                deferred_indices.begin(),
-                deferred_indices.end(),
-                nominee_prefer);
-            alive_indices.insert(
-                alive_indices.end(),
-                deferred_indices.begin(),
-                deferred_indices.end());
-        } else {
-            alive_indices.reserve(nominee_evals.size());
             for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
                 alive_indices.push_back(idx);
             }
@@ -814,9 +885,52 @@
                 alive_indices.end(),
                 nominee_prefer);
             exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
-            if (depth_remaining <= 1 && exactify_top_k_ <= 0) {
-                exactify_budget_count = nominee_evals.size();
+            const auto impurity_it = std::find_if(
+                alive_indices.begin(),
+                alive_indices.end(),
+                [&](size_t idx) { return !nominee_evals[idx].candidate.hard_loss_mode; });
+            if (impurity_it != alive_indices.end() &&
+                exactify_budget_count > 0U &&
+                static_cast<size_t>(std::distance(alive_indices.begin(), impurity_it)) >= exactify_budget_count) {
+                alive_indices[exactify_budget_count - 1U] = *impurity_it;
+                std::stable_sort(
+                    alive_indices.begin(),
+                    alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count),
+                    nominee_prefer);
             }
+        } else {
+            size_t best_impurity_idx = std::numeric_limits<size_t>::max();
+            size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
+            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                if (nominee_evals[idx].candidate.hard_loss_mode) {
+                    if (best_hardloss_idx == std::numeric_limits<size_t>::max() ||
+                        nominee_family_prefer(idx, best_hardloss_idx)) {
+                        best_hardloss_idx = idx;
+                    }
+                } else {
+                    if (best_impurity_idx == std::numeric_limits<size_t>::max() ||
+                        nominee_family_prefer(idx, best_impurity_idx)) {
+                        best_impurity_idx = idx;
+                    }
+                }
+            }
+            if (best_impurity_idx != std::numeric_limits<size_t>::max()) {
+                alive_indices.push_back(best_impurity_idx);
+            }
+            if (best_hardloss_idx != std::numeric_limits<size_t>::max() &&
+                best_hardloss_idx != best_impurity_idx) {
+                alive_indices.push_back(best_hardloss_idx);
+            }
+            if (alive_indices.empty()) {
+                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                    alive_indices.push_back(idx);
+                }
+            }
+            std::stable_sort(
+                alive_indices.begin(),
+                alive_indices.end(),
+                nominee_prefer);
+            exactify_budget_count = alive_indices.size();
         }
 
         std::vector<double> node_candidate_upper_bounds;
@@ -960,6 +1074,12 @@
                 return exact_results[idx];
             }
             if (!materialize_nominee(eval, prepared)) {
+                finalized[idx] = 1U;
+                exact_results[idx] = std::move(result);
+                ++exact_evaluated_total;
+                return exact_results[idx];
+            }
+            if (eval.lower_bound + kEpsUpdate >= best_exact_objective) {
                 finalized[idx] = 1U;
                 exact_results[idx] = std::move(result);
                 ++exact_evaluated_total;
