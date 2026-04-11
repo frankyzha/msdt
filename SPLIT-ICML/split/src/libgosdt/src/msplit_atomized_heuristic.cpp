@@ -809,33 +809,18 @@
                     deferred_indices.end());
             }
         } else {
-            size_t best_impurity_idx = std::numeric_limits<size_t>::max();
-            size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
+            alive_indices.reserve(nominee_evals.size());
             for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                if (nominee_evals[idx].candidate.hard_loss_mode) {
-                    if (best_hardloss_idx == std::numeric_limits<size_t>::max() ||
-                        nominee_family_prefer(idx, best_hardloss_idx)) {
-                        best_hardloss_idx = idx;
-                    }
-                } else {
-                    if (best_impurity_idx == std::numeric_limits<size_t>::max() ||
-                        nominee_family_prefer(idx, best_impurity_idx)) {
-                        best_impurity_idx = idx;
-                    }
-                }
-            }
-            if (best_impurity_idx != std::numeric_limits<size_t>::max()) {
-                alive_indices.push_back(best_impurity_idx);
-            }
-            if (best_hardloss_idx != std::numeric_limits<size_t>::max() &&
-                best_hardloss_idx != best_impurity_idx) {
-                alive_indices.push_back(best_hardloss_idx);
+                alive_indices.push_back(idx);
             }
             std::stable_sort(
                 alive_indices.begin(),
                 alive_indices.end(),
                 nominee_prefer);
-            exactify_budget_count = alive_indices.size();
+            exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
+            if (depth_remaining <= 1 && exactify_top_k_ <= 0) {
+                exactify_budget_count = nominee_evals.size();
+            }
         }
 
         std::vector<double> node_candidate_upper_bounds;
@@ -1032,9 +1017,7 @@
             return exact_results[idx];
         };
 
-        const size_t exactify_limit = exact_mode
-            ? std::min(exactify_budget_count, alive_indices.size())
-            : alive_indices.size();
+        const size_t exactify_limit = std::min(exactify_budget_count, alive_indices.size());
         for (size_t order = 0; order < exactify_limit; ++order) {
             const size_t idx = alive_indices[order];
             if (finalized[idx]) {
@@ -1050,6 +1033,25 @@
                 best_exact_tree = result.tree;
                 best_exact_idx = idx;
                 ++incumbent_update_count;
+            }
+        }
+        if (!exact_mode && depth_remaining > 1 && best_exact_objective + kEpsUpdate >= leaf_objective) {
+            for (size_t order = exactify_limit; order < alive_indices.size(); ++order) {
+                const size_t idx = alive_indices[order];
+                if (finalized[idx]) {
+                    continue;
+                }
+                const ExactNomineeResult &result = exactify_nominee(idx);
+                if (!result.valid || !result.tree) {
+                    continue;
+                }
+                if (result.objective + kEpsUpdate < leaf_objective) {
+                    best_exact_objective = result.objective;
+                    best_exact_tree = result.tree;
+                    best_exact_idx = idx;
+                    ++incumbent_update_count;
+                    break;
+                }
             }
         }
         const GreedyResult solved = (best_exact_tree && best_exact_objective + kEpsUpdate < leaf_objective)
