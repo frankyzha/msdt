@@ -758,7 +758,7 @@ class Solver {
         out.family2_soft_impurity_sum = family2_soft_impurity_sum_;
         out.family_soft_impurity_delta_sum = family_soft_impurity_delta_sum_;
         out.family2_joint_impurity_wins = family2_joint_impurity_wins_;
-        out.teacher_available = teacher_available_;
+        out.teacher_available = true;
         out.n_classes = n_classes_;
         out.teacher_class_count = teacher_class_count_;
         out.binary_mode = binary_mode_;
@@ -840,7 +840,6 @@ class Solver {
     std::vector<double> teacher_prob_;
     std::vector<double> teacher_prob_flat_;
     std::vector<int> teacher_prediction_;
-    bool teacher_available_ = false;
     int n_classes_ = 0;
     bool binary_mode_ = true;
     int teacher_boundary_cols_ = 0;
@@ -1257,8 +1256,7 @@ class Solver {
         teacher_prob_.assign((size_t)n_rows_, 0.5);
         teacher_prob_flat_.clear();
         teacher_prediction_.assign((size_t)n_rows_, 0);
-        teacher_available_ = !teacher_logit_raw_.empty();
-        if (!teacher_available_) {
+        if (teacher_logit_raw_.empty()) {
             throw std::invalid_argument(
                 "MSPLIT requires teacher_logit for the reference-guided atomized solver.");
         }
