@@ -1,30 +1,20 @@
 #include "msplit.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
-#include <functional>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
-#include <iomanip>
-#include <list>
 #include <limits>
 #include <memory>
 #include <numeric>
-#include <queue>
 #include <stdexcept>
-#include <sstream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
-
-#include <unistd.h>
 
 namespace msplit {
 
@@ -341,7 +331,6 @@ class Solver {
         double &family1_soft_impurity_sum;
         double &family2_soft_impurity_sum;
         double &family_soft_impurity_delta_sum;
-        std::vector<nlohmann::json> &family1_hard_loss_inversion_traces;
         long long &heuristic_selector_nodes;
         long long &heuristic_selector_candidate_total;
         long long &heuristic_selector_candidate_pruned_total;
@@ -503,7 +492,6 @@ class Solver {
               family1_soft_impurity_sum_,
               family2_soft_impurity_sum_,
               family_soft_impurity_delta_sum_,
-              family1_hard_loss_inversion_traces_,
               heuristic_selector_nodes_,
               heuristic_selector_candidate_total_,
               heuristic_selector_candidate_pruned_total_,
@@ -591,7 +579,7 @@ class Solver {
         if (!sample_weight_raw_.empty() && (int)sample_weight_raw_.size() != n_rows_) {
             throw std::invalid_argument("MSPLIT sample_weight must have length n_rows when provided.");
         }
-        initialize_trace();
+        initialize_runtime_overrides();
         initialize_class_info();
         initialize_weights();
         initialize_teacher_prob();
@@ -908,11 +896,6 @@ class Solver {
     const bool profiling_enabled_ = env_flag_enabled("MSPLIT_ENABLE_PROFILING");
     const bool detailed_selector_telemetry_enabled_ =
         env_flag_enabled("MSPLIT_ENABLE_DETAILED_TELEMETRY");
-    mutable std::ofstream trace_stream_;
-    mutable bool trace_enabled_ = false;
-    mutable std::string trace_file_path_;
-    mutable long long trace_event_seq_ = 0;
-    int trace_max_depth_ = 3;
         long long debr_refine_calls_ = 0;
         long long debr_refine_improved_ = 0;
         long long debr_total_moves_ = 0;
@@ -976,7 +959,6 @@ class Solver {
     long long family1_selected_by_dominance_ = 0;
     long long family2_selected_by_dominance_ = 0;
     long long family_sent_both_ = 0;
-    std::vector<nlohmann::json> family1_hard_loss_inversion_traces_;
     AtomizedTelemetry atomized_telemetry_;
     long long atomized_features_prepared_ = 0;
     long long atomized_coarse_candidates_ = 0;
@@ -1079,7 +1061,7 @@ class Solver {
         ++profiling_greedy_complete_calls_by_depth_[bucket];
     }
 
-    void initialize_trace() {
+    void initialize_runtime_overrides() {
         const char *greedy_cache_max_depth_env = std::getenv("MSPLIT_GREEDY_CACHE_MAX_DEPTH");
         if (greedy_cache_max_depth_env != nullptr && *greedy_cache_max_depth_env != '\0') {
             const int parsed = std::atoi(greedy_cache_max_depth_env);
@@ -1087,91 +1069,6 @@ class Solver {
                 greedy_cache_max_depth_ = parsed;
             }
         }
-        const char *trace_path = std::getenv("MSPLIT_TRACE_FILE");
-        if (trace_path == nullptr || *trace_path == '\0') {
-            return;
-        }
-        trace_file_path_ = trace_path;
-        const char *depth_limit_env = std::getenv("MSPLIT_TRACE_MAX_DEPTH");
-        if (depth_limit_env != nullptr && *depth_limit_env != '\0') {
-            const int parsed = std::atoi(depth_limit_env);
-            if (parsed >= 0) {
-                trace_max_depth_ = parsed;
-            }
-        }
-        trace_stream_.open(trace_file_path_, std::ios::out | std::ios::app);
-        trace_enabled_ = trace_stream_.is_open();
-        if (trace_enabled_) {
-            std::ostringstream oss;
-            oss << "seq=" << trace_event_seq_++
-                << " phase=trace_begin"
-                << " pid=" << getpid()
-                << " max_depth=" << trace_max_depth_
-                << " greedy_cache_max_depth=" << greedy_cache_max_depth_
-                << " rss_kb=" << current_rss_kb()
-                << " cache_entries=" << greedy_cache_entries_current_
-                << " cache_bytes=" << greedy_cache_bytes_current_;
-            trace_line(oss.str());
-        }
-    }
-
-    long long current_rss_kb() const {
-        std::ifstream statm("/proc/self/statm");
-        long long total_pages = 0;
-        long long resident_pages = 0;
-        if (!(statm >> total_pages >> resident_pages)) {
-            return -1;
-        }
-        const long page_kb = std::max<long>(1L, sysconf(_SC_PAGESIZE) / 1024L);
-        return resident_pages * page_kb;
-    }
-
-    void trace_line(const std::string &line) const {
-        if (!trace_enabled_) {
-            return;
-        }
-        trace_stream_ << line << '\n';
-        trace_stream_.flush();
-    }
-
-    void trace_greedy_snapshot(
-        const char *phase,
-        int depth_remaining,
-        size_t indices_size,
-        size_t preserved_feature_count,
-        size_t candidate_count,
-        size_t promising_count,
-        size_t processed_count,
-        size_t recurse_attempts,
-        double incumbent_objective,
-        double best_lower_bound,
-        size_t incumbent_updates
-    ) const {
-        if (!trace_enabled_ || depth_remaining > trace_max_depth_) {
-            return;
-        }
-        std::ostringstream oss;
-        oss << std::setprecision(17)
-            << "seq=" << trace_event_seq_++
-            << " phase=" << phase
-            << " depth=" << depth_remaining
-            << " rows=" << indices_size
-            << " preserved=" << preserved_feature_count
-            << " candidates=" << candidate_count
-            << " promising=" << promising_count
-            << " processed=" << processed_count
-            << " recurse=" << recurse_attempts
-            << " incumbent_updates=" << incumbent_updates
-            << " incumbent=" << incumbent_objective
-            << " best_lb=" << best_lower_bound
-            << " cache_states=" << greedy_cache_states_
-            << " cache_entries=" << greedy_cache_entries_current_
-            << " cache_bytes=" << greedy_cache_bytes_current_
-            << " cache_peak_entries=" << greedy_cache_entries_peak_
-            << " cache_peak_bytes=" << greedy_cache_bytes_peak_
-            << " rss_kb=" << current_rss_kb()
-            << " greedy_calls=" << profiling_greedy_complete_calls_;
-        trace_line(oss.str());
     }
 
     void initialize_weights() {
@@ -1437,20 +1334,6 @@ class Solver {
             return 0;
         }
         return (max_branching_ <= 0) ? n_bins : std::min(n_bins, max_branching_);
-    }
-
-    static uint64_t hash_mix_u64(uint64_t seed, uint64_t value) {
-        return seed ^ (value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
-    }
-
-    static uint64_t state_hash(const std::vector<int> &indices, int depth_remaining) {
-        uint64_t h = 0x9e3779b97f4a7c15ULL;
-        h = hash_mix_u64(h, static_cast<uint64_t>(static_cast<uint32_t>(depth_remaining)));
-        h = hash_mix_u64(h, static_cast<uint64_t>(static_cast<uint32_t>(indices.size())));
-        for (int value : indices) {
-            h = hash_mix_u64(h, static_cast<uint64_t>(static_cast<uint32_t>(value)));
-        }
-        return h;
     }
 
     struct SubproblemStats {
@@ -1746,11 +1629,9 @@ class Solver {
     }
 
     #include "msplit_debug.cpp"
-#if defined(MSPLIT_USE_BACKUP_SELECTOR)
-    #include "msplit_nonlinear.cpp"
-#else
+    // Keep one explicit active selector path instead of hiding it behind a
+    // build-time switch. The current production solver lives in msplit_linear.cpp.
     #include "msplit_linear.cpp"
-#endif
 };
 
 }  // namespace

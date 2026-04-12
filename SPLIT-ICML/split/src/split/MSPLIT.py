@@ -117,77 +117,9 @@ _NATIVE_INT_METRIC_KEYS = _metric_keys(
     greedy_cache_hits
     greedy_unique_states
     greedy_cache_entries_peak
-    greedy_cache_clears
-    dp_interval_evals
     greedy_interval_evals
-    prism_rollout_calls
-    prism_exact_calls
-    prism_rollout_candidate_evals
-    prism_exact_candidate_evals
-    prism_shortlist_states
-    prism_shortlist_candidates
-    prism_rollout_cache_hits
-    prism_rollout_cache_entries_peak
-    prism_rollout_cache_bytes_peak
-    prism_exact_cache_hits
-    prism_exact_cache_entries_peak
-    prism_exact_cache_bytes_peak
-    prism_child_state_profiled_nodes
-    prism_child_state_edges
-    prism_child_state_unique
-    prism_child_state_duplicate_edges
-    prism_child_state_multiuse_states
-    prism_child_state_max_uses_peak
-    rush_incumbent_feature_aborts
-    rush_refinement_child_calls
-    rush_refinement_recursive_calls
-    rush_refinement_recursive_unique_states
-    rush_ub_rescue_picks
-    rush_global_fallback_picks
-    rush_profile_enabled
-    rush_profile_exact_lazy_dp_recompute_calls
-    rush_profile_exact_lazy_closure_passes
-    interval_refinements_attempted
     expensive_child_calls
     expensive_child_exactify_calls
-    fast100_exactify_nodes_allowed
-    fast100_exactify_nodes_skipped_small_support
-    fast100_exactify_nodes_skipped_dominant_gain
-    depth1_skipped_by_low_global_ambiguity
-    depth1_skipped_by_large_gap
-    depth1_exactify_challenger_nodes
-    depth1_exactified_nodes
-    depth1_exactified_features_max
-    depth1_teacher_replaced_runnerup
-    depth1_teacher_rejected_by_uhat_gate
-    depth1_exactify_set_size_max
-    fast100_skipped_by_ub_lb_separation
-    fast100_widen_forbidden_depth_gt0_attempts
-    fast100_frontier_size_max
-    fast100_stopped_midloop_separation
-    fast100_M_depth0_max
-    fast100_M_depth1_max
-    fast100_cf_exactify_nodes_depth0
-    fast100_cf_exactify_nodes_depth1
-    fast100_cf_skipped_agreement
-    fast100_cf_skipped_small_regret
-    fast100_cf_skipped_low_impact
-    fast100_cf_frontier_size_max
-    fast100_cf_exactified_features_max
-    rootsafe_exactified_features
-    rootsafe_root_winner_changed_vs_proxy
-    rootsafe_root_candidates_K
-    fast100_used_lgb_prior_tiebreak
-    gini_dp_calls_root
-    gini_dp_calls_depth1
-    gini_teacher_chosen_depth1
-    gini_tiebreak_used_in_shortlist
-    gini_root_k0
-    gini_endpoints_added_root
-    gini_endpoints_added_depth1
-    gini_endpoints_features_touched_root
-    gini_endpoints_features_touched_depth1
-    gini_endpoints_added_per_feature_max
     """
 )
 
@@ -220,30 +152,8 @@ _NATIVE_FLOAT_METRIC_KEYS = _metric_keys(
     heuristic_selector_improving_split_margin_sum
     heuristic_selector_improving_split_margin_max
     profiling_refine_sec
-    prism_rollout_sec
-    prism_exact_sec
-    rush_total_time_sec
-    rush_profile_ub0_ordering_sec
-    rush_profile_exact_lazy_eval_sec
-    rush_profile_exact_lazy_eval_exclusive_sec
-    rush_profile_exact_lazy_eval_sec_depth0
-    rush_profile_exact_lazy_eval_exclusive_sec_depth0
-    rush_profile_exact_lazy_table_init_sec
-    rush_profile_exact_lazy_dp_recompute_sec
-    rush_profile_exact_lazy_child_solve_sec
-    rush_profile_exact_lazy_child_solve_sec_depth0
-    rush_profile_exact_lazy_closure_sec
     expensive_child_sec
     expensive_child_exactify_sec
-    depth1_exactified_features_mean
-    depth1_exactify_set_size_mean
-    fast100_frontier_size_mean
-    fast100_M_depth0_mean
-    fast100_M_depth1_mean
-    fast100_cf_frontier_size_mean
-    fast100_cf_exactified_features_mean
-    gini_dp_sec
-    gini_endpoint_sec
     """
 )
 
@@ -264,7 +174,6 @@ _NATIVE_LIST_METRIC_KEYS = _metric_keys(
     per_node_candidate_lower_bounds
     nominee_exactify_prefix_histogram
     profiling_greedy_complete_calls_by_depth
-    prism_child_state_use_histogram
     """
 )
 
@@ -305,17 +214,17 @@ class BoundResult:
 
 
 class MSPLIT(ClassifierMixin, BaseEstimator):
-    """True k-ary tree solver with SPLIT-style lookahead boundary behavior.
+    """Reference-guided multiway tree solver.
 
-    Above lookahead depth, the solver performs systematic DP recursion.
-    At exactly the lookahead depth, it computes a greedy completion and sets
-    ``lb = ub = greedy_objective`` for that subproblem.
-
-    When ``exactify_top_k`` is left unspecified, the atomized solver exactifies
-    a ``sqrt(N)`` prefix of the shortlisted nominees at each node. In dual-family
-    mode, the shortlist is bucketed by family and the same rule is applied within
-    each bucket separately. If ``exactify_top_k=K`` is specified, the solver
-    exactifies up to ``K`` nominees from each active family bucket.
+    Each split is a discrete multiway routing over the ordered bins of one
+    feature. The native solver generates both impurity and hard-loss candidates,
+    merges them into one shortlist, prunes them with a LightGBM-guided reference
+    floor, and exactifies only a small prefix. Near the root it exactifies a
+    broader shortlist; below the lookahead horizon it switches to a much cheaper
+    greedy completion. When ``exactify_top_k`` is omitted, the shortlist budget
+    defaults to a ``sqrt(N)`` rule on the active candidate set. When
+    ``exactify_top_k=K`` is specified, the solver exactifies at most ``K``
+    candidates above the lookahead horizon.
     """
 
     def __init__(
@@ -398,11 +307,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         self.per_node_candidate_count_ = list(
             cpp_result.get("per_node_candidate_count", self.greedy_candidate_count_histogram_)
         )
-        self.rush_refinement_child_time_sec_ = 0.0
-        self.rush_refinement_child_time_fraction_ = 0.0
-        self.rush_feature_logs_root_ = []
-        self.rush_feature_logs_depth1_ = []
-        self.rush_refinement_depth_logs_ = []
 
     def _reset_solver_diagnostics(self, *, class_count: int) -> None:
         self.native_n_classes_ = int(class_count)
@@ -418,11 +322,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
 
         self.per_node_prepared_features_ = []
         self.per_node_candidate_count_ = []
-        self.rush_refinement_child_time_sec_ = 0.0
-        self.rush_refinement_child_time_fraction_ = 0.0
-        self.rush_feature_logs_root_ = []
-        self.rush_feature_logs_depth1_ = []
-        self.rush_refinement_depth_logs_ = []
 
     def fit(
         self,

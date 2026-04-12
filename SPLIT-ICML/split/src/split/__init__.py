@@ -13,14 +13,12 @@ from ._version import version as __version__
 from ._binarizer import NumericBinarizer
 from ._threshold_guessing import ThresholdGuessBinarizer
 from .MSPLIT import MSPLIT
-from .MSPLIT_RUSHDP import MSPLIT_RUSHDP
 
 __all__ = [
     "__version__",
     "NumericBinarizer",
     "ThresholdGuessBinarizer",
     "MSPLIT",
-    "MSPLIT_RUSHDP",
 ]
 
 # Default placeholders when the compiled extension is not available.

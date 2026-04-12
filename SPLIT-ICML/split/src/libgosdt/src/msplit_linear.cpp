@@ -15,7 +15,7 @@
         }
 
         ++profiling_refine_calls_;
-        ScopedTimer refine_timer(profiling_refine_sec_);
+        ScopedTimer refine_timer(profiling_refine_sec_, profiling_enabled_);
 
         AtomizedRefinementSummary local_summary;
 
@@ -781,7 +781,7 @@
                 return seed;
             }
             local_summary.improved =
-                atomized_score_better_for_refinement(refined.score, seed.score, mu_node, mode);
+                atomized_score_better_for_refinement(refined.score, seed.score, mode);
             if (summary != nullptr) {
                 *summary = local_summary;
             }
@@ -1065,7 +1065,7 @@
         if (!refined.feasible) {
             return seed;
         }
-        local_summary.improved = atomized_score_better_for_refinement(refined.score, seed.score, mu_node, mode);
+        local_summary.improved = atomized_score_better_for_refinement(refined.score, seed.score, mode);
         if (summary != nullptr) {
             *summary = local_summary;
         }
@@ -1379,6 +1379,9 @@
     }
 
     void record_refinement_summary(const AtomizedRefinementSummary &summary) {
+        if (!detailed_selector_telemetry_enabled_) {
+            return;
+        }
         auto &telemetry = atomized_telemetry();
         auto accumulate_histogram = [](const std::vector<long long> &src, std::vector<long long> &dst) {
             if (src.size() > dst.size()) {
@@ -1433,10 +1436,8 @@
         int feature,
         const PreparedFeatureAtomized &prepared,
         int groups,
-        double mu_node,
         AtomizedObjectiveMode mode
     ) {
-        (void)mu_node;
         AtomizedCoarseCandidate coarse;
         if (groups < 2 || groups > prepared.q_effective) {
             return coarse;
@@ -1493,7 +1494,6 @@
     bool prepare_feature_atomized_local(
         const std::vector<int> &indices,
         int feature,
-        double mu_node,
         PreparedFeatureAtomized &prepared
     ) {
         auto &telemetry = atomized_telemetry();
@@ -1501,7 +1501,7 @@
         if (!build_ordered_bins(indices, feature, prepared.bins)) {
             return false;
         }
-        if (!build_atomized_atoms(prepared.bins, feature, prepared.atoms)) {
+        if (!build_atomized_atoms(prepared.bins, prepared.atoms)) {
             return false;
         }
         ++telemetry.atomized_features_prepared;
@@ -1525,7 +1525,7 @@
         prepared.atom_prefix = build_atomized_prefixes(prepared.atoms);
         prepared.atom_adjacency_bonus.clear();
         prepared.atom_adjacency_bonus_total = 0.0;
-        if (teacher_available_ && prepared.atoms.size() > 1U) {
+        if (prepared.atoms.size() > 1U) {
             prepared.atom_adjacency_bonus.resize(prepared.atoms.size() - 1U, 0.0);
             for (size_t atom_pos = 0; atom_pos + 1U < prepared.atoms.size(); ++atom_pos) {
                 const double bonus = contiguous_boundary_bonus(
@@ -1563,13 +1563,11 @@
                 feature,
                 prepared,
                 groups,
-                mu_node,
                 AtomizedObjectiveMode::kImpurity);
             AtomizedCoarseCandidate hardloss_coarse = prepare_folded_family_coarse(
                 feature,
                 prepared,
                 groups,
-                mu_node,
                 AtomizedObjectiveMode::kHardLoss);
             if (!coarse.candidate.feasible && !hardloss_coarse.candidate.feasible) {
                 continue;
@@ -1588,12 +1586,10 @@
         int feature,
         const PreparedFeatureAtomized &prepared,
         int groups,
-        double mu_node,
         const AtomizedCoarseCandidate &coarse,
         AtomizedObjectiveMode mode,
         const AtomizedCandidate *raw_seed_override = nullptr
     ) {
-        (void)mu_node;
         AtomizedCandidate best;
         if (coarse.geometry_seed_candidate.feasible) {
             best = coarse.geometry_seed_candidate;
@@ -1603,8 +1599,7 @@
                 coarse.block_candidate,
                 best,
                 feature,
-                feature,
-                mode)) {
+                feature)) {
             best = coarse.block_candidate;
         }
 
@@ -1635,8 +1630,7 @@
                 coarse.block_candidate,
                 best,
                 feature,
-                feature,
-                mode)) {
+                feature)) {
             best = coarse.block_candidate;
         }
         return best;
@@ -1645,8 +1639,7 @@
     std::vector<AtomizedCandidate> select_atomized_candidates_for_arity(
         int feature,
         const PreparedFeatureAtomized &prepared,
-        int groups,
-        double mu_node
+        int groups
     ) {
         std::vector<AtomizedCandidate> selected;
         if (groups < 2 ||
@@ -1666,7 +1659,6 @@
             feature,
             prepared,
             groups,
-            mu_node,
             impurity_coarse,
             AtomizedObjectiveMode::kImpurity,
             &raw_seed_pair.impurity);
@@ -1674,7 +1666,6 @@
             feature,
             prepared,
             groups,
-            mu_node,
             hardloss_coarse,
             AtomizedObjectiveMode::kHardLoss,
             &raw_seed_pair.misclassification);
@@ -1793,7 +1784,7 @@
     GreedyResult greedy_complete(std::vector<int> indices, int depth_remaining) {
         check_timeout();
         ++profiling_greedy_complete_calls_;
-        ScopedTimer greedy_timer(profiling_greedy_complete_sec_);
+        ScopedTimer greedy_timer(profiling_greedy_complete_sec_, profiling_enabled_);
         ++greedy_subproblem_calls_;
 
         auto make_state_key = [&](const std::vector<int> &rows, int depth) {
@@ -1835,36 +1826,23 @@
         }
 
         const double mu_node = effective_sample_unit(stats);
-        const int node_depth = full_depth_budget_ - depth_remaining;
         auto bump_count_histogram = [](std::vector<long long> &hist, size_t bucket) {
             if (hist.size() <= bucket) {
                 hist.resize(bucket + 1U, 0);
             }
             ++hist[bucket];
         };
-        auto count_signature_blocks = [&](const std::vector<int> &rows) -> size_t {
-            std::unordered_set<std::string> block_keys;
-            block_keys.reserve(rows.size());
-            for (int row : rows) {
-                std::string code;
-                code.resize((size_t)n_features_ * sizeof(int));
-                std::memcpy(
-                    code.data(),
-                    &x_flat_[(size_t)row * (size_t)n_features_],
-                    (size_t)n_features_ * sizeof(int));
-                block_keys.insert(std::move(code));
-            }
-            return block_keys.size();
-        };
-        (void)count_signature_blocks(indices);
         std::vector<RankedAtomizedCandidate> ranked_candidates;
         std::vector<PreparedFeatureAtomized> prepared_by_feature((size_t)n_features_);
-        std::vector<double> feature_best_primaries((size_t)n_features_, kInfinity);
+        std::vector<int> valid_features;
+        valid_features.reserve((size_t)n_features_);
+        double best_coarse_proxy = kInfinity;
         for (int feature = 0; feature < n_features_; ++feature) {
             PreparedFeatureAtomized prepared;
-            if (!prepare_feature_atomized_local(indices, feature, mu_node, prepared)) {
+            if (!prepare_feature_atomized_local(indices, feature, prepared)) {
                 continue;
             }
+            valid_features.push_back(feature);
             double feature_best_proxy = kInfinity;
             for (size_t groups = 2; groups < prepared.coarse_by_groups.size(); ++groups) {
                 const AtomizedCandidate &impurity_candidate = prepared.coarse_by_groups[groups].candidate;
@@ -1881,22 +1859,15 @@
                 }
             }
             prepared_by_feature[(size_t)feature] = std::move(prepared);
-            feature_best_primaries[(size_t)feature] = feature_best_proxy;
-        }
-
-        double best_coarse_proxy = kInfinity;
-        for (double feature_best_proxy : feature_best_primaries) {
             best_coarse_proxy = std::min(best_coarse_proxy, feature_best_proxy);
         }
 
         {
-            ScopedTimer candidate_timer(profiling_candidate_generation_sec_);
-            std::vector<size_t> feature_survivor_pair_count((size_t)n_features_, 0U);
-            for (int feature = 0; feature < n_features_; ++feature) {
+            ScopedTimer candidate_timer(profiling_candidate_generation_sec_, profiling_enabled_);
+            std::vector<size_t> feature_survivor_pair_count(valid_features.size(), 0U);
+            for (size_t valid_feature_idx = 0; valid_feature_idx < valid_features.size(); ++valid_feature_idx) {
+                const int feature = valid_features[valid_feature_idx];
                 const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)feature];
-                if (!prepared.valid) {
-                    continue;
-                }
                 for (size_t groups = 2; groups < prepared.coarse_by_groups.size(); ++groups) {
                     const AtomizedCandidate &impurity_candidate = prepared.coarse_by_groups[groups].candidate;
                     const AtomizedCandidate &hardloss_candidate = prepared.coarse_by_groups_hardloss[groups].candidate;
@@ -1911,18 +1882,17 @@
                     }
                     auto &telemetry = atomized_telemetry();
                     const double best_proxy = std::min(impurity_proxy, hardloss_proxy);
-                    if (!disable_coarse_pruning_ && best_proxy > best_coarse_proxy + mu_node + kEpsUpdate) {
+                    if (best_proxy > best_coarse_proxy + mu_node + kEpsUpdate) {
                         ++telemetry.atomized_coarse_pruned_candidates;
                         continue;
                     }
-                    ++feature_survivor_pair_count[(size_t)feature];
+                    ++feature_survivor_pair_count[valid_feature_idx];
 
                     std::vector<AtomizedCandidate> candidates =
                         select_atomized_candidates_for_arity(
                             feature,
                             prepared,
-                            (int)groups,
-                            mu_node);
+                            (int)groups);
                     if (candidates.empty()) {
                         continue;
                     }
@@ -1941,17 +1911,13 @@
                 }
             }
             auto bump_count_histogram = [](std::vector<long long> &hist, size_t bucket) {
-                const size_t idx = bucket;
-                if (hist.size() <= idx) {
-                    hist.resize(idx + 1U, 0);
+                if (hist.size() <= bucket) {
+                    hist.resize(bucket + 1U, 0);
                 }
-                ++hist[idx];
+                ++hist[bucket];
             };
-            for (size_t feature = 0; feature < feature_survivor_pair_count.size(); ++feature) {
-                if (!prepared_by_feature[feature].valid) {
-                    continue;
-                }
-                bump_count_histogram(greedy_feature_survivor_histogram_, feature_survivor_pair_count[feature]);
+            for (size_t feature_pair_count : feature_survivor_pair_count) {
+                bump_count_histogram(greedy_feature_survivor_histogram_, feature_pair_count);
             }
             std::stable_sort(
                 ranked_candidates.begin(),
@@ -1979,7 +1945,7 @@
         std::vector<std::vector<std::pair<int, int>>> group_spans;
         std::vector<std::shared_ptr<Node>> child_nodes;
         {
-            ScopedTimer recursion_timer(profiling_recursive_child_eval_sec_);
+            ScopedTimer recursion_timer(profiling_recursive_child_eval_sec_, profiling_enabled_);
             for (size_t ranked_idx = 0; ranked_idx < ranked_candidates.size(); ++ranked_idx) {
                 auto &ranked = ranked_candidates[ranked_idx];
                 const bool recurse_competitive = ((int)ranked_idx < recurse_limit);
@@ -2068,12 +2034,7 @@
             }
         }
 
-        size_t preserved_feature_count = 0U;
-        for (const auto &feature_prepared : prepared_by_feature) {
-            if (feature_prepared.valid) {
-                ++preserved_feature_count;
-            }
-        }
+        const size_t preserved_feature_count = valid_features.size();
         bump_count_histogram(greedy_feature_preserved_histogram_, preserved_feature_count);
         bump_count_histogram(greedy_candidate_count_histogram_, ranked_candidates.size());
 

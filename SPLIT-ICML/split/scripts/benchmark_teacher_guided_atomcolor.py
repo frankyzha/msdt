@@ -17,7 +17,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from split import MSPLIT_RUSHDP
+from split import MSPLIT
 
 
 @dataclass(frozen=True)
@@ -155,7 +155,7 @@ def count_shapecart_nodes(tree: object) -> tuple[int, int]:
     return 1 + left_internal + right_internal, left_leaves + right_leaves
 
 
-def make_msplit_model(method: str) -> MSPLIT_RUSHDP:
+def make_msplit_model(method: str) -> MSPLIT:
     common = dict(
         full_depth_budget=2,
         lookahead_depth_budget=1,
@@ -166,7 +166,7 @@ def make_msplit_model(method: str) -> MSPLIT_RUSHDP:
         time_limit=60,
     )
     if method == "teacher_guided_atomcolor":
-        return MSPLIT_RUSHDP(
+        return MSPLIT(
             **common,
             approx_distilled_mode=True,
             approx_distilled_alpha=0.8,
@@ -174,7 +174,7 @@ def make_msplit_model(method: str) -> MSPLIT_RUSHDP:
             approx_distilled_geometry_mode="teacher_guided_atomcolor",
         )
     if method == "hard_label_approx":
-        return MSPLIT_RUSHDP(**common)
+        return MSPLIT(**common)
     raise ValueError(f"unknown MSPLIT method: {method}")
 
 

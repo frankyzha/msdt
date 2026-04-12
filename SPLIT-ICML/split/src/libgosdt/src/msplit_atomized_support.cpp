@@ -611,7 +611,6 @@
     bool atomized_score_better_for_refinement(
         const AtomizedScore &lhs,
         const AtomizedScore &rhs,
-        double mu_node,
         AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
     ) const {
         const double lhs_primary = atomized_primary_objective(lhs, mode);
@@ -636,12 +635,21 @@
         return false;
     }
 
+    bool atomized_score_better_for_refinement(
+        const AtomizedScore &lhs,
+        const AtomizedScore &rhs,
+        double mu_node,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        (void)mu_node;
+        return atomized_score_better_for_refinement(lhs, rhs, mode);
+    }
+
     bool atomized_candidate_better_for_objective(
         const AtomizedCandidate &lhs,
         const AtomizedCandidate &rhs,
         int lhs_feature,
-        int rhs_feature,
-        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+        int rhs_feature
     ) const {
         if (!rhs.feasible) {
             return lhs.feasible;
@@ -683,6 +691,17 @@
             return lhs.assignment < rhs.assignment;
         }
         return false;
+    }
+
+    bool atomized_candidate_better_for_objective(
+        const AtomizedCandidate &lhs,
+        const AtomizedCandidate &rhs,
+        int lhs_feature,
+        int rhs_feature,
+        AtomizedObjectiveMode mode
+    ) const {
+        (void)mode;
+        return atomized_candidate_better_for_objective(lhs, rhs, lhs_feature, rhs_feature);
     }
 
     bool atomized_candidate_dominates(
@@ -852,93 +871,6 @@
             !family2_joint_better && !family1_joint_better) {
             ++telemetry.family_neither_both_wins;
         }
-    }
-
-    void record_family1_hard_loss_inversion_trace(
-        const AtomizedCandidate &final_impurity,
-        const AtomizedCandidate &final_misclassification,
-        const AtomizedCandidate &raw_impurity,
-        const AtomizedCandidate &raw_misclassification,
-        int feature,
-        int groups
-    ) const {
-        auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
-        if (telemetry.family1_hard_loss_inversion_traces.size() >= 24) {
-            return;
-        }
-
-        const double final_impurity_joint = atomized_joint_impurity(final_impurity.score);
-        const double final_misclassification_joint = atomized_joint_impurity(final_misclassification.score);
-        if (!(final_impurity.score.hard_loss < final_misclassification.score.hard_loss - kEpsUpdate &&
-              final_impurity_joint < final_misclassification_joint - kEpsUpdate)) {
-            return;
-        }
-
-        auto winner_label = [](double lhs, double rhs) {
-            if (lhs < rhs - kEpsUpdate) {
-                return 1;
-            }
-            if (rhs < lhs - kEpsUpdate) {
-                return 2;
-            }
-            return 0;
-        };
-
-        nlohmann::json trace;
-        trace["feature"] = feature;
-        trace["groups"] = groups;
-        trace["final"] = {
-            {"family1", {
-                {"hard_loss", final_impurity.score.hard_loss},
-                {"hard_impurity", final_impurity.score.hard_impurity},
-                {"soft_impurity", final_impurity.score.soft_impurity},
-                {"joint_impurity", final_impurity_joint},
-                {"boundary_penalty", final_impurity.score.boundary_penalty},
-                {"components", final_impurity.score.components},
-            }},
-            {"family2", {
-                {"hard_loss", final_misclassification.score.hard_loss},
-                {"hard_impurity", final_misclassification.score.hard_impurity},
-                {"soft_impurity", final_misclassification.score.soft_impurity},
-                {"joint_impurity", final_misclassification_joint},
-                {"boundary_penalty", final_misclassification.score.boundary_penalty},
-                {"components", final_misclassification.score.components},
-            }},
-        };
-        trace["raw"] = {
-            {"family1", {
-                {"hard_loss", raw_impurity.score.hard_loss},
-                {"hard_impurity", raw_impurity.score.hard_impurity},
-                {"soft_impurity", raw_impurity.score.soft_impurity},
-                {"joint_impurity", atomized_joint_impurity(raw_impurity.score)},
-                {"boundary_penalty", raw_impurity.score.boundary_penalty},
-                {"components", raw_impurity.score.components},
-            }},
-            {"family2", {
-                {"hard_loss", raw_misclassification.score.hard_loss},
-                {"hard_impurity", raw_misclassification.score.hard_impurity},
-                {"soft_impurity", raw_misclassification.score.soft_impurity},
-                {"joint_impurity", atomized_joint_impurity(raw_misclassification.score)},
-                {"boundary_penalty", raw_misclassification.score.boundary_penalty},
-                {"components", raw_misclassification.score.components},
-            }},
-        };
-        trace["winner"] = {
-            {"final_hard_loss", winner_label(final_impurity.score.hard_loss, final_misclassification.score.hard_loss)},
-            {"final_joint_impurity", winner_label(final_impurity_joint, final_misclassification_joint)},
-            {"raw_hard_loss", winner_label(raw_impurity.score.hard_loss, raw_misclassification.score.hard_loss)},
-            {"raw_joint_impurity", winner_label(
-                atomized_joint_impurity(raw_impurity.score),
-                atomized_joint_impurity(raw_misclassification.score))},
-        };
-        trace["deltas"] = {
-            {"family1_hard_loss", final_impurity.score.hard_loss - raw_impurity.score.hard_loss},
-            {"family2_hard_loss", final_misclassification.score.hard_loss - raw_misclassification.score.hard_loss},
-            {"family1_joint_impurity", final_impurity_joint - atomized_joint_impurity(raw_impurity.score)},
-            {"family2_joint_impurity", final_misclassification_joint - atomized_joint_impurity(raw_misclassification.score)},
-        };
-
-        telemetry.family1_hard_loss_inversion_traces.push_back(std::move(trace));
     }
 
     std::vector<AtomizedCandidate> select_family_nominees(

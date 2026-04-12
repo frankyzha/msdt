@@ -27,7 +27,7 @@ from xgboost import XGBClassifier
 
 from experiment_utils import DATASET_LOADERS, encode_binary_target, make_preprocessor
 from lightgbm_binning import fit_lightgbm_binner
-from split import MSPLIT, MSPLIT_RUSHDP
+from split import MSPLIT
 from tree_artifact_utils import write_artifact_json
 
 
@@ -49,13 +49,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-child-size", type=int, default=8)
     parser.add_argument("--max-branching", type=int, default=0)
     parser.add_argument("--reg", type=float, default=0.01)
-    parser.add_argument(
-        "--msplit-variant",
-        choices=["optimal_dp", "rush_dp"],
-        default="rush_dp",
-        help="MSPLIT interval partitioning variant.",
-    )
-
     parser.add_argument("--xgb-n-estimators", type=int, default=300)
     parser.add_argument("--xgb-learning-rate", type=float, default=0.05)
     parser.add_argument("--xgb-num-threads", type=int, default=4)
@@ -1280,8 +1273,7 @@ def _fit_msplit_tree(
     z_test = binner.transform(x_test_proc)
     lookahead = min(args.lookahead_cap, args.depth_budget - 1)
 
-    model_cls = MSPLIT if str(args.msplit_variant).strip().lower() == "optimal_dp" else MSPLIT_RUSHDP
-    model = model_cls(
+    model = MSPLIT(
         lookahead_depth_budget=lookahead,
         full_depth_budget=args.depth_budget,
         reg=args.reg,
@@ -1406,7 +1398,7 @@ def main() -> None:
                 ("min_leaf", str(model_cfg.get("min_samples_leaf", args.min_samples_leaf))),
                 ("min_child", str(model_cfg.get("min_child_size", args.min_child_size))),
                 ("reg", str(model_cfg.get("reg", args.reg))),
-                ("msplit_var", str(model_cfg.get("msplit_variant", args.msplit_variant))),
+                ("msplit_var", str(model_cfg.get("msplit_variant", "msplit"))),
                 ("seed", str(split_cfg.get("seed", args.seed))),
                 ("test", str(split_cfg.get("test_size", args.test_size))),
             ]
@@ -1562,7 +1554,7 @@ def main() -> None:
             ("min_leaf", str(args.min_samples_leaf)),
             ("min_child", str(args.min_child_size)),
             ("reg", str(args.reg)),
-            ("msplit_var", str(args.msplit_variant)),
+            ("msplit_var", "msplit"),
             ("seed", str(args.seed)),
             ("test", str(args.test_size)),
         ],
@@ -1602,7 +1594,7 @@ def main() -> None:
                 "min_child_size": int(args.min_child_size),
                 "max_branching": int(args.max_branching),
                 "reg": float(args.reg),
-                "msplit_variant": str(args.msplit_variant),
+                "msplit_variant": "msplit",
             },
             "binner": {
                 "n_features": int(len(feature_names)),

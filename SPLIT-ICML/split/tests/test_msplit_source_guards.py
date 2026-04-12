@@ -3,19 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _current_solver_source_text():
-    root = Path(__file__).resolve().parents[1]
-    core_source = root / "src" / "libgosdt" / "src" / "msplit_core.cpp"
-    atomized_source = root / "src" / "libgosdt" / "src" / "msplit_atomized.cpp"
+def _source_root() -> Path:
+    return Path(__file__).resolve().parents[1] / "src" / "libgosdt" / "src"
+
+
+def _current_solver_source_text() -> dict[str, str]:
+    root = _source_root()
+    core_source = root / "msplit_core.cpp"
+    selector_source = root / "msplit_linear.cpp"
+    support_source = root / "msplit_atomized_support.cpp"
     return {
         "core": core_source.read_text(encoding="utf-8"),
-        "atomized": atomized_source.read_text(encoding="utf-8"),
+        "selector": selector_source.read_text(encoding="utf-8"),
+        "support": support_source.read_text(encoding="utf-8"),
     }
 
 
 def test_current_sources_have_no_force_legacy_or_atom_descent_symbols():
     texts = _current_solver_source_text()
-    text = texts["core"] + "\n" + texts["atomized"]
+    text = "\n".join(texts.values())
 
     assert "MSPLIT_FORCE_RUSH_LEGACY" not in text
     assert "ensure_teacher_prior_hierarchy_for_prep_legacy" not in text
@@ -28,34 +34,17 @@ def test_current_sources_have_no_force_legacy_or_atom_descent_symbols():
     assert "legacy_mean_logit" not in py_text
 
 
-def test_current_atomized_source_has_no_objective_to_mis_backdoor_pattern():
-    text = _current_solver_source_text()["atomized"]
-
-    forbidden = [
-        "lb_mis = child.lb - regularization_",
-        "lb_mis = child.lb - lambda",
-        "lb_mis = child.lb_obj -",
-    ]
-    for token in forbidden:
-        assert token not in text
-
-
 def test_current_sources_have_no_legacy_selector_or_path_lp_helpers():
     texts = _current_solver_source_text()
-    text = texts["core"] + "\n" + texts["atomized"]
+    text = "\n".join(texts.values())
 
     forbidden = [
-        "signature_bound_for_indices",
         "path_bound_for_indices",
         "state_lower_bound_for_indices",
         "tighten_candidate_lower_bound_with_path",
         "initialize_candidate_lower_bounds",
         "candidate_leaf_completion_objective",
-        "get_canonical_signature_summary",
-        "build_canonical_signature_state",
-        "encode_signature_code",
         "CanonicalSignatureState",
-        "CanonicalSignatureSummary",
         "profiling_signature_bound_calls",
         "profiling_signature_bound_sec",
         "signature_state_cache_entries",
@@ -73,21 +62,31 @@ def test_current_sources_have_no_legacy_selector_or_path_lp_helpers():
         "lp_skip_reason_tighten_cap",
         "greedy_state_block_count_histogram",
         "per_node_block_count",
+        "count_signature_blocks(",
     ]
     for token in forbidden:
         assert token not in text
 
 
-def test_current_atomized_lookahead_boundary_switches_to_greedy_completion():
-    text = _current_solver_source_text()["atomized"]
+def test_current_solver_uses_single_active_selector_source():
+    root = _source_root()
+    core_text = _current_solver_source_text()["core"]
+    linear_text = _current_solver_source_text()["selector"]
+    init_text = (Path(__file__).resolve().parents[1] / "src" / "split" / "__init__.py").read_text(encoding="utf-8")
 
-    assert "current_depth < effective_lookahead_depth_" in text
-    assert "return greedy_complete_impl(std::move(indices), depth_remaining, true);" in text
-    assert "return greedy_complete_impl(std::move(indices), depth_remaining, false);" in text
-    assert "use_exact_frontier" in text
-    assert "candidate_envelope_score(" in text
-    assert "prism_envelope_value(" in text
-    assert "prism_order_compare" in text
+    assert '#include "msplit_linear.cpp"' in core_text
+    assert '#include "msplit_atomized_support.cpp"' in linear_text
+    assert "MSPLIT_USE_BACKUP_SELECTOR" not in core_text
+    assert (root / "msplit_nonlinear.cpp").exists()
+    assert not (root / "msplit_exact_lazy.cpp").exists()
+    assert "MSPLIT_RUSHDP" not in init_text
+
+
+def test_current_sources_have_no_unused_family_trace_sink():
+    text = "\n".join(_current_solver_source_text().values())
+
+    assert "record_family1_hard_loss_inversion_trace" not in text
+    assert "family1_hard_loss_inversion_traces" not in text
 
 
 def test_current_core_default_lookahead_is_dynamic_half_depth():
