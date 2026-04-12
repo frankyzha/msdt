@@ -168,7 +168,6 @@
         int feature = -1;
         int groups = 0;
         double cheap_score = kInfinity;
-        double cheap_lower_bound = kInfinity;
         double cheap_hard_ceiling = kInfinity;
     };
 
@@ -177,7 +176,6 @@
         int groups = 0;
         AtomizedCandidate candidate;
         double cheap_score = kInfinity;
-        double cheap_lower_bound = kInfinity;
         std::vector<std::vector<int>> child_indices;
         std::vector<SubproblemStats> child_stats;
         std::vector<std::vector<std::pair<int, int>>> group_spans;
@@ -274,8 +272,6 @@
                             mu_node,
                             AtomizedObjectiveMode::kImpurity);
                     eval.cheap_score = score;
-                    eval.cheap_lower_bound = std::min(prepared_ref.atom_hard_floor, prepared_ref.atom_imp_floor) +
-                        mu_node * static_cast<double>(eval.groups);
                     eval.cheap_hard_ceiling =
                         impurity_coarse.candidate.score.hard_loss +
                         regularization_ * static_cast<double>(eval.groups);
@@ -291,8 +287,6 @@
                             AtomizedObjectiveMode::kHardLoss);
                     if (!std::isfinite(eval.cheap_score) || score < eval.cheap_score - kEpsUpdate) {
                         eval.cheap_score = score;
-                        eval.cheap_lower_bound = std::min(prepared_ref.atom_hard_floor, prepared_ref.atom_imp_floor) +
-                            mu_node * static_cast<double>(eval.groups);
                     }
                     const double hardloss_ceiling =
                         hardloss_coarse.candidate.score.hard_loss +
@@ -356,7 +350,6 @@
                         mu_node,
                         nominee_mode)
                     : eval.cheap_score;
-                nominee.cheap_lower_bound = eval.cheap_lower_bound;
                 nominee.candidate = std::move(candidate);
                 nominees.push_back(std::move(nominee));
             }
@@ -414,7 +407,6 @@
                         mu_node,
                         nominee_mode)
                     : eval.cheap_score;
-                nominee.cheap_lower_bound = eval.cheap_lower_bound;
                 nominee.candidate = std::move(candidate);
 
                 if (!has_best || compare_nominee_eval_core(nominee, best_nominee) < 0) {
