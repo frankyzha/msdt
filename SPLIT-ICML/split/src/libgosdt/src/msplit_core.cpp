@@ -1261,7 +1261,8 @@ class Solver {
         teacher_prediction_.assign((size_t)n_rows_, 0);
         teacher_available_ = !teacher_logit_raw_.empty();
         if (!teacher_available_) {
-            return;
+            throw std::invalid_argument(
+                "MSPLIT requires teacher_logit for the reference-guided atomized solver.");
         }
         if (teacher_class_count_ <= 1) {
             for (int row = 0; row < n_rows_; ++row) {
@@ -1482,7 +1483,7 @@ class Solver {
                 const double weight = sample_weight_[(size_t)idx];
                 out.sum_weight += weight;
                 out.sum_weight_sq += weight * weight;
-                if (teacher_available_ && teacher_prediction_[(size_t)idx] != label) {
+                if (teacher_prediction_[(size_t)idx] != label) {
                     out.reference_error_weight += weight;
                 }
                 if (label == 1) {
@@ -1511,7 +1512,7 @@ class Solver {
             const double weight = sample_weight_[(size_t)idx];
             out.sum_weight += weight;
             out.sum_weight_sq += weight * weight;
-            if (teacher_available_ && teacher_prediction_[(size_t)idx] != label) {
+            if (teacher_prediction_[(size_t)idx] != label) {
                 out.reference_error_weight += weight;
             }
             ++out.class_counts[(size_t)label];

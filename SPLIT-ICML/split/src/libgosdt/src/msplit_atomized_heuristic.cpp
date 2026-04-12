@@ -662,7 +662,7 @@
             for (const CandidateEval &eval : candidate_evals) {
                 ++feature_survivor_pair_count[(size_t)eval.feature];
             }
-        } else if (teacher_available_ && above_lookahead) {
+        } else if (above_lookahead) {
             auto resolve_pair_budget = [&](size_t candidate_count) -> size_t {
                 if (candidate_count == 0U) {
                     return 0U;
@@ -747,7 +747,7 @@
                 surviving_candidate_evals.push_back(eval);
                 ++feature_survivor_pair_count[(size_t)eval.feature];
             }
-        } else if (teacher_available_) {
+        } else {
             size_t best_impurity_idx = std::numeric_limits<size_t>::max();
             size_t best_reference_idx = std::numeric_limits<size_t>::max();
             auto reference_pair_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
@@ -815,23 +815,6 @@
                 best_reference_idx != best_impurity_idx) {
                 surviving_candidate_evals.push_back(candidate_evals[best_reference_idx]);
                 ++feature_survivor_pair_count[(size_t)candidate_evals[best_reference_idx].feature];
-            }
-        } else {
-            double best_coarse_proxy = kInfinity;
-            for (const CandidateEval &eval : candidate_evals) {
-                best_coarse_proxy = std::min(best_coarse_proxy, eval.cheap_score);
-            }
-            if (!std::isfinite(best_coarse_proxy)) {
-                return return_leaf_now("return_no_candidate", preserved_feature_count, 0U, leaf_objective);
-            }
-            const double pair_prune_cutoff = best_coarse_proxy + mu_node + kEpsUpdate;
-            for (const CandidateEval &eval : candidate_evals) {
-                if (eval.cheap_score <= pair_prune_cutoff) {
-                    surviving_candidate_evals.push_back(eval);
-                    ++feature_survivor_pair_count[(size_t)eval.feature];
-                } else {
-                    ++pruned_pair_count;
-                }
             }
         }
         for (size_t feature = 0; feature < feature_survivor_pair_count.size(); ++feature) {
@@ -907,7 +890,7 @@
             above_lookahead_hardloss_bucket_before_prune_total_ += hardloss_before;
         }
 
-        if (teacher_available_ && above_lookahead) {
+        if (above_lookahead) {
             std::vector<NomineeEval> reference_survivors;
             reference_survivors.reserve(nominee_evals.size());
             size_t early_stop_idx = std::numeric_limits<size_t>::max();

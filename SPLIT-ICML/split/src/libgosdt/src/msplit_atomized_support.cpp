@@ -565,16 +565,10 @@
     }
 
     double atomized_candidate_bad_boundary(const AtomizedCandidate &candidate) const {
-        if (!teacher_available_) {
-            return 0.0;
-        }
         return candidate.score.boundary_penalty;
     }
 
     double atomized_score_bad_boundary(const AtomizedScore &score) const {
-        if (!teacher_available_) {
-            return 0.0;
-        }
         return score.boundary_penalty;
     }
 
@@ -1001,9 +995,6 @@
         const AtomizedAtom &left,
         const AtomizedAtom &right
     ) const {
-        if (!teacher_available_) {
-            return 0.0;
-        }
         const int gap_width = right.bin_value - left.bin_value;
         if (gap_width <= 0) {
             return 0.0;
@@ -1026,7 +1017,6 @@
 
     bool build_atomized_atoms(
         const OrderedBins &bins,
-        int feature,
         std::vector<AtomizedAtom> &atoms,
         double *hard_floor_out = nullptr,
         double *imp_floor_out = nullptr
@@ -1059,34 +1049,25 @@
                 } else {
                     atom.class_weight[(size_t)label] += w;
                 }
-                if (teacher_available_) {
-                    if (binary_mode_) {
-                        const double teacher_prob = teacher_prob_[(size_t)idx];
-                        atom.teacher_pos_weight += w * teacher_prob;
-                        atom.teacher_neg_weight += w * (1.0 - teacher_prob);
-                    } else {
-                        const size_t teacher_base = static_cast<size_t>(idx) * static_cast<size_t>(n_classes_);
-                        for (int cls = 0; cls < n_classes_; ++cls) {
-                            atom.teacher_class_weight[(size_t)cls] +=
-                                w * teacher_prob_flat_[teacher_base + static_cast<size_t>(cls)];
-                        }
+                if (binary_mode_) {
+                    const double teacher_prob = teacher_prob_[(size_t)idx];
+                    atom.teacher_pos_weight += w * teacher_prob;
+                    atom.teacher_neg_weight += w * (1.0 - teacher_prob);
+                } else {
+                    const size_t teacher_base = static_cast<size_t>(idx) * static_cast<size_t>(n_classes_);
+                    for (int cls = 0; cls < n_classes_; ++cls) {
+                        atom.teacher_class_weight[(size_t)cls] +=
+                            w * teacher_prob_flat_[teacher_base + static_cast<size_t>(cls)];
                     }
                 }
             }
 
             if (binary_mode_) {
-                if (!teacher_available_) {
-                    atom.teacher_pos_weight = atom.pos_weight;
-                    atom.teacher_neg_weight = atom.neg_weight;
-                }
                 const double teacher_total = atom.teacher_pos_weight + atom.teacher_neg_weight;
                 atom.teacher_prob = (teacher_total > kEpsUpdate) ? (atom.teacher_pos_weight / teacher_total) : 0.5;
                 atom.empirical_prediction = (atom.pos_weight >= atom.neg_weight) ? 1 : 0;
                 atom.teacher_prediction = (atom.teacher_prob >= 0.5) ? 1 : 0;
             } else {
-                if (!teacher_available_) {
-                    atom.teacher_class_weight = atom.class_weight;
-                }
                 atom.empirical_prediction = argmax_index(atom.class_weight);
                 atom.teacher_prediction = argmax_index(atom.teacher_class_weight);
             }

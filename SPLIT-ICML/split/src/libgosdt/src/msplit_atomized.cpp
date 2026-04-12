@@ -1533,7 +1533,6 @@
         }
         if (!build_atomized_atoms(
                 prepared.bins,
-                feature,
                 prepared.atoms,
                 &prepared.atom_hard_floor,
                 &prepared.atom_imp_floor)) {
@@ -1560,7 +1559,7 @@
         prepared.atom_prefix = build_atomized_prefixes(prepared.atoms);
         prepared.atom_adjacency_bonus.clear();
         prepared.atom_adjacency_bonus_total = 0.0;
-        if (teacher_available_ && prepared.atoms.size() > 1U) {
+        if (prepared.atoms.size() > 1U) {
             prepared.atom_adjacency_bonus.resize(prepared.atoms.size() - 1U, 0.0);
             for (size_t atom_pos = 0; atom_pos + 1U < prepared.atoms.size(); ++atom_pos) {
                 const double bonus = contiguous_boundary_bonus(
