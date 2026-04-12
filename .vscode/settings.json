@@ -1,6 +1,0 @@
-{
-  "git.ignoredRepositories": [
-    "SPLIT-ICML"
-  ],
-  "cmake.sourceDirectory": "/home/users/yz1075/msdt/SPLIT-ICML/resplit"
-}

@@ -190,7 +190,7 @@ cython_debug/
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
 
 # Local Codex/workspace artifacts and duplicate checkouts
 .codex
@@ -199,6 +199,18 @@ SPLIT-ICML/split-benchmark-baseline/
 SPLIT-ICML/split/build-fast-py/install_manifest.txt
 SPLIT-ICML/split/build-linear-py/gosdt_cli
 datasets/coupon/run.log
+"$TMPDIR"/
+
+# Local CMake/Python build trees
+SPLIT-ICML/split/build*/
+SPLIT-ICML/split/debug-build/
+SPLIT-ICML/split/manual-build/
+SPLIT-ICML/split/.pytest_cache/
+SPLIT-ICML/split/tests/__pycache__/
+.openml_cache/
+.openml_cache_root/
+tmp_*.log
+datasets_electricity_nohup.log
 
 # Ruff stuff:
 .ruff_cache/

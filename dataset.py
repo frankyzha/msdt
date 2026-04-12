@@ -105,7 +105,7 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
         source="local_csv",
         task="classification",
         target_name="two_year_recid",
-        local_path="SPLIT-ICML/resplit/example/compas.csv",
+        local_path="datasets/compas/raw/compas_data_matrix.csv",
         description="COMPAS recidivism benchmark (raw non-binarized source).",
     ),
     "heloc": DatasetSpec(

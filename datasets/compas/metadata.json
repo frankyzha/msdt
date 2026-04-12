@@ -14,7 +14,7 @@
   "schema_version": 1,
   "spec": {
     "description": "COMPAS recidivism benchmark (raw non-binarized source).",
-    "local_path": "SPLIT-ICML/resplit/example/compas.csv",
+    "local_path": "datasets/compas/raw/compas_data_matrix.csv",
     "name": "compas",
     "openml_id": null,
     "source": "local_csv",
