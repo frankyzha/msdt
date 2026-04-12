@@ -1,0 +1,46 @@
+{
+  "csv_path": "/home/users/yz1075/msdt/datasets/coupon/raw/coupon_data_matrix.csv",
+  "feature_columns": [
+    "destination",
+    "passanger",
+    "weather",
+    "temperature",
+    "time",
+    "map",
+    "coupon",
+    "expiration",
+    "gender",
+    "age",
+    "maritalStatus",
+    "Childrennumber",
+    "education",
+    "occupation",
+    "income",
+    "Bar",
+    "CoffeeHouse",
+    "CarryAway",
+    "RestaurantLessThan20",
+    "Restaurant20To50",
+    "toCoupon_GEQ5min",
+    "toCoupon_GEQ15min",
+    "toCoupon_GEQ25min",
+    "direction_same",
+    "direction_opp"
+  ],
+  "n_columns": 26,
+  "n_rows": 12079,
+  "schema_version": 1,
+  "spec": {
+    "description": "Coupon recommendation classification from the in-repo coupon source CSV.",
+    "local_path": "datasets/coupon_source.csv",
+    "name": "coupon",
+    "openml_id": null,
+    "source": "local_csv",
+    "target_name": "Y",
+    "task": "classification",
+    "uci_id": null
+  },
+  "target_columns": [
+    "Y"
+  ]
+}

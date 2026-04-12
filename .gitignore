@@ -192,6 +192,14 @@ cython_debug/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# Local Codex/workspace artifacts and duplicate checkouts
+.codex
+SPLIT-ICML/split-b948995/
+SPLIT-ICML/split-benchmark-baseline/
+SPLIT-ICML/split/build-fast-py/install_manifest.txt
+SPLIT-ICML/split/build-linear-py/gosdt_cli
+datasets/coupon/run.log
+
 # Ruff stuff:
 .ruff_cache/
 
