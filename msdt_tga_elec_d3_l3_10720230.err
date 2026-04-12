@@ -1,2 +1,0 @@
-stty: 'standard input': Inappropriate ioctl for device
-[2026-03-11T15:37:07.349] error: *** JOB 10720230 ON compsci-cluster-fitz-49 CANCELLED AT 2026-03-11T15:37:07 DUE to SIGNAL Terminated ***

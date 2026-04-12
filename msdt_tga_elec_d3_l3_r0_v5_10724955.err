@@ -1,8 +1,0 @@
-[ATOMCOLOR-PAIR-PROFILE] phase=start depth=0 rows=31717 features_done=0/14 pairs=0 feasible_pairs=0 exactify_calls=0 exactify_feasible=0 exactify_aborted=0 prep_sec=0.000 family_sec=0.000 bounds_sec=0.000 exactify_sec=0.000 incumbent_f=-1 incumbent_g=-1 incumbent_ub=inf node_lb=inf max_ambiguity=inf pending_pairs=0 elapsed_sec=0.000
-[ATOMCOLOR-PAIR-DETAIL] phase=prep_start depth=0 feature=0 rows=31717 atoms=0 groups=0 elapsed_sec=0.000
-[ATOMCOLOR-PAIR-DETAIL] phase=prep_done depth=0 feature=0 rows=31717 atoms=0 groups=0 elapsed_sec=0.004
-[ATOMCOLOR-PAIR-DETAIL] phase=family_prep_start depth=0 feature=0 rows=0 atoms=0 groups=0 elapsed_sec=0.000
-[ATOMCOLOR-PAIR-DETAIL] phase=family_dict_done depth=0 feature=0 rows=0 atoms=98 groups=0 elapsed_sec=0.010
-[ATOMCOLOR-PAIR-DETAIL] phase=family_start depth=0 feature=0 rows=0 atoms=98 groups=3 elapsed_sec=0.000
-[ATOMCOLOR-PAIR-DETAIL] phase=family_group_done depth=0 feature=0 rows=0 atoms=98 groups=2 elapsed_sec=0.003
-[2026-03-12T16:23:56.722] error: *** JOB 10724955 ON compsci-cluster-fitz-46 CANCELLED AT 2026-03-12T16:23:56 DUE to SIGNAL Terminated ***

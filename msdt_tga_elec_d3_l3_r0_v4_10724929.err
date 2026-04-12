@@ -1,2 +1,0 @@
-[ATOMCOLOR-PAIR-PROFILE] phase=start depth=0 rows=31717 features_done=0/14 pairs=0 feasible_pairs=0 exactify_calls=0 exactify_feasible=0 exactify_aborted=0 prep_sec=0.000 family_sec=0.000 bounds_sec=0.000 exactify_sec=0.000 incumbent_f=-1 incumbent_g=-1 incumbent_ub=inf node_lb=inf max_ambiguity=inf pending_pairs=0 elapsed_sec=0.000
-[2026-03-12T16:15:31.154] error: *** JOB 10724929 ON compsci-cluster-fitz-46 CANCELLED AT 2026-03-12T16:15:31 DUE to SIGNAL Terminated ***

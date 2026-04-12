@@ -1,9 +1,0 @@
-[2026-03-10T02:30:25-04:00] Starting LightGBM multisplit experiment run.
-[2026-03-10T02:30:25-04:00] run_name=benchmark_teacher_atomcolor_electricity_d4_reg0_rununion_opt_20260310_v2
-[2026-03-10T02:30:25-04:00] run_dir=/home/users/yz1075/msdt/results/runs_lightgbm/benchmark_teacher_atomcolor_electricity_d4_reg0_rununion_opt_20260310_v2
-[2026-03-10T02:30:25-04:00] parallel settings: parallel_trials=1, threads_per_trial=6, lgb_threads=6, lgb_ensemble_runs=1, lgb_device=cpu, lgb_max_gpu_jobs=1, core_budget=6, effective_core_budget=6, effective_parallel_trials=1, cpu_target=1.0, cpu_affinity=[], cpu_nice=0
-[2026-03-10T02:30:25-04:00] OpenML cache directory set to /home/users/yz1075/msdt/results/openml_cache
-[2026-03-10T02:30:25-04:00] Loading dataset=electricity
-[2026-03-10T02:30:25-04:00] dataset=electricity, class_prevalence(max class)=0.5755
-[2026-03-10T02:30:25-04:00] historical default params: none found (using static defaults)
-[2026-03-10T02:30:25-04:00] dataset=electricity, depth=4, lookahead=3, seeds=[0], param_source=static_defaults

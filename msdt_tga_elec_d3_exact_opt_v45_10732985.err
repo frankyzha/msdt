@@ -1,4 +1,0 @@
-[I 2026-03-14 17:48:08,914] A new study created in memory with name: lightgbm_electricity_d3
-[I 2026-03-14 17:48:37,637] Trial 0 finished with value: 0.7914827890556045 and parameters: {'leaf_frac': 0.02, 'reg': 0.0003, 'lgb_num_leaves': 255, 'lgb_learning_rate': 0.05, 'lgb_feature_fraction': 1.0, 'lgb_bagging_freq': 0, 'lgb_min_data_in_bin': 1, 'lgb_min_data_in_leaf_choice': 'base', 'lgb_lambda_l2': 0.0}. Best is trial 0 with value: 0.7914827890556045.
-[I 2026-03-14 17:49:04,463] Trial 1 finished with value: 0.7914827890556045 and parameters: {'leaf_frac': 0.01, 'reg': 0.0008, 'lgb_num_leaves': 255, 'lgb_learning_rate': 0.05, 'lgb_feature_fraction': 1.0, 'lgb_bagging_freq': 0, 'lgb_min_data_in_bin': 1, 'lgb_min_data_in_leaf_choice': 'quadruple', 'lgb_lambda_l2': 0.0}. Best is trial 0 with value: 0.7914827890556045.
-[2026-03-14T17:49:16.871] error: *** JOB 10732985 ON compsci-cluster-fitz-45 CANCELLED AT 2026-03-14T17:49:16 DUE to SIGNAL Terminated ***

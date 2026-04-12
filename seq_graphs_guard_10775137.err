@@ -1,2 +1,0 @@
-[2026-03-19T20:39:41-04:00] Starting dataset=electricity attempt=1
-[2026-03-19T20:43:48.480] error: *** JOB 10775137 ON compsci-cluster-fitz-47 CANCELLED AT 2026-03-19T20:43:48 DUE to SIGNAL Terminated ***

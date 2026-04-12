@@ -1,3 +1,0 @@
-[I 2026-02-27 15:57:50,053] A new study created in Journal with name: lightgbm_eye-state_d4
-[I 2026-02-27 16:01:50,518] Trial 5 finished with value: 0.6602136181575434 and parameters: {'leaf_frac': 0.05, 'reg': 0.02249874404676264, 'lgb_num_leaves': 16, 'lgb_learning_rate': 0.013829475227269284, 'lgb_feature_fraction': 0.8766385837012096, 'lgb_bagging_freq': 1, 'lgb_bagging_fraction': 0.858298018181088, 'lgb_min_data_in_bin': 3, 'lgb_min_data_in_leaf_choice': 'quadruple', 'lgb_lambda_l2': 0.1}. Best is trial 5 with value: 0.6602136181575434.
-[2026-02-27T17:07:55.716] error: *** JOB 10624913 ON compsci-cluster-fitz-45 CANCELLED AT 2026-02-27T17:07:55 DUE to SIGNAL Terminated ***

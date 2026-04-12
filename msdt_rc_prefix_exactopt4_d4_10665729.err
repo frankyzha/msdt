@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/home/users/yz1075/msdt/multisplit_experiment_runner.py", line 5788, in <module>
-    run_main("lightgbm")
-  File "/home/users/yz1075/msdt/multisplit_experiment_runner.py", line 5784, in run_main
-    _run_internal(pipeline)
-  File "/home/users/yz1075/msdt/multisplit_experiment_runner.py", line 5487, in _run_internal
-    raise RuntimeError(f"Run directory already exists: {run_dir}. Use --resume or pick --run-name.")
-RuntimeError: Run directory already exists: /home/users/yz1075/msdt/results/runs_lightgbm/benchmark_distilled_runcolor_prefix_electricity_d4_exactopt4_20260309. Use --resume or pick --run-name.

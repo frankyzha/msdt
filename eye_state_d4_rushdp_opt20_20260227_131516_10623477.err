@@ -1,3 +1,0 @@
-stty: 'standard input': Inappropriate ioctl for device
-[I 2026-02-27 13:15:24,365] A new study created in memory with name: lightgbm_eye-state_d4
-[2026-02-27T14:03:44.336] error: *** JOB 10623477 ON compsci-cluster-fitz-48 CANCELLED AT 2026-02-27T14:03:44 DUE to SIGNAL Terminated ***
