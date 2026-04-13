@@ -1,4 +1,0 @@
-dataset,model,depth_budget,mean_train_accuracy,std_train_accuracy,mean_val_accuracy,std_val_accuracy,mean_test_accuracy,std_test_accuracy,mean_balanced_accuracy,std_balanced_accuracy,mean_fit_time_sec,std_fit_time_sec,mean_internal_nodes,mean_leaves,mean_sparsity,n_runs
-electricity,msplit_atomized,3,0.8596065325682578,0.0,0.8351357316265725,0.0,0.8320644378241201,0.0,0.826198727077589,0.0,44.80619165796088,0.0,9.0,17.0,0.625,1
-electricity,shapecart,3,0.8185257582445299,0.0,0.8179209887442066,0.0,0.809996689837802,0.0,0.7914716431096815,0.0,2.5338096679770388,0.0,13.0,27.0,0.75,1
-electricity,xgboost,3,0.8321773125669967,0.0,0.8344736261310969,0.0,0.8300783405053515,0.0,0.8201068655999975,0.0,0.8521163839614019,0.0,689.0,789.0,0.0,1

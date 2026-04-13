@@ -201,7 +201,6 @@ benchmark/datasets/coupon/run.log
 
 # Local CMake/Python build trees
 algorithm/msplit/build*/
-!algorithm/msplit/build-nonlinear-py
 algorithm/msplit/debug-build/
 algorithm/msplit/manual-build/
 algorithm/msplit/pyproject-build/
@@ -220,21 +219,15 @@ benchmark/cache/
 benchmark/artifacts/*
 !benchmark/artifacts/datasets/
 benchmark/artifacts/datasets/*
-!benchmark/artifacts/datasets/coupon/
-!benchmark/artifacts/datasets/electricity/
-benchmark/artifacts/datasets/coupon/*
-!benchmark/artifacts/datasets/coupon/plots/
-!benchmark/artifacts/datasets/coupon/summary_by_depth.csv
-benchmark/artifacts/datasets/coupon/plots/*
-!benchmark/artifacts/datasets/coupon/plots/accuracy_vs_depth_test.png
-!benchmark/artifacts/datasets/coupon/plots/accuracy_vs_depth_val.png
-benchmark/artifacts/datasets/electricity/*
-!benchmark/artifacts/datasets/electricity/plots/
-!benchmark/artifacts/datasets/electricity/summary_by_depth.csv
-!benchmark/artifacts/datasets/electricity/last_error.json
-benchmark/artifacts/datasets/electricity/plots/*
-!benchmark/artifacts/datasets/electricity/plots/accuracy_vs_depth_test.png
-!benchmark/artifacts/datasets/electricity/plots/accuracy_vs_depth_val.png
+!benchmark/artifacts/datasets/README.md
+!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/
+benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/*
+!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/README.md
+!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/
+!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/summary_by_depth.csv
+benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/*
+!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/accuracy_vs_depth_test.png
+!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/accuracy_vs_depth_val.png
 
 # Ruff stuff:
 .ruff_cache/

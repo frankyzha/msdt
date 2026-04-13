@@ -18,10 +18,10 @@ from benchmark.scripts.lightgbm_binning import fit_lightgbm_binner, serialize_li
 DEFAULT_CACHE_VERSION = 6
 DEFAULT_CACHE_SEED = 0
 DEFAULT_TEST_SIZE = 0.2
-DEFAULT_VAL_SIZE = 0.125
+DEFAULT_VAL_SIZE = 0.1
 DEFAULT_MAX_BINS = 1024
-DEFAULT_MIN_SAMPLES_LEAF = 8
-DEFAULT_MIN_CHILD_SIZE = 8
+DEFAULT_MIN_SAMPLES_LEAF = 4
+DEFAULT_MIN_CHILD_SIZE = 4
 DEFAULT_LGB_NUM_THREADS = 6
 
 DEFAULT_LIGHTGBM_BINNING_KWARGS = {
@@ -215,6 +215,42 @@ def derive_min_split_size(*, leaf_frac: float, n_fit: int) -> int:
     return max(2, int(math.ceil((2.0 * frac) * max(1, int(n_fit)))))
 
 
+def resolve_protocol_support_sizes(
+    *,
+    dataset: str | None = None,
+    y_encoded: np.ndarray | None = None,
+    seed: int = DEFAULT_CACHE_SEED,
+    test_size: float = DEFAULT_TEST_SIZE,
+    val_size: float = DEFAULT_VAL_SIZE,
+    leaf_frac: float = 0.001,
+    min_child_size: int = 0,
+    min_split_size: int = 0,
+) -> tuple[int | None, int, int]:
+    resolved_min_child_size = int(min_child_size)
+    resolved_min_split_size = int(min_split_size)
+    if resolved_min_child_size > 0 and resolved_min_split_size > 0:
+        return None, resolved_min_child_size, resolved_min_split_size
+
+    if y_encoded is None:
+        if dataset is None:
+            raise ValueError("dataset must be provided when y_encoded is not available")
+        _, y = DATASET_LOADERS[dataset]()
+        y_encoded, _, _ = encode_target(y)
+
+    split_idx = _protocol_split_indices(
+        y_encoded=np.asarray(y_encoded, dtype=np.int32),
+        seed=int(seed),
+        test_size=float(test_size),
+        val_size=float(val_size),
+    )
+    n_fit = int(split_idx["idx_fit"].shape[0])
+    if resolved_min_child_size <= 0:
+        resolved_min_child_size = derive_min_child_size(leaf_frac=float(leaf_frac), n_fit=n_fit)
+    if resolved_min_split_size <= 0:
+        resolved_min_split_size = derive_min_split_size(leaf_frac=float(leaf_frac), n_fit=n_fit)
+    return n_fit, resolved_min_child_size, resolved_min_split_size
+
+
 def build_cache(
     *,
     dataset: str,
@@ -323,6 +359,9 @@ def build_cache(
         "cache_file": cache_path.name,
         "cache_bytes": int(cache_path.stat().st_size),
         "n_rows": int(X_fit_proc.shape[0] + X_val_proc.shape[0] + X_test_proc.shape[0]),
+        "n_fit": int(X_fit_proc.shape[0]),
+        "n_val": int(X_val_proc.shape[0]),
+        "n_test": int(X_test_proc.shape[0]),
         "n_features_preprocessed": int(X_fit_proc.shape[1]),
         "class_count": int(len(class_labels)),
         "class_labels": [str(label) for label in class_labels],

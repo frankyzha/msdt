@@ -34,11 +34,24 @@ if str(PROJECT_ROOT) not in sys.path:
 from benchmark.scripts.benchmark_paths import BENCHMARK_ARTIFACTS_ROOT, SCRIPT_ROOT, ensure_repo_import_paths
 from benchmark.scripts.cache_utils import (
     DEFAULT_CACHE_VERSION,
+    DEFAULT_LGB_NUM_THREADS,
+    DEFAULT_MAX_BINS,
+    DEFAULT_MIN_CHILD_SIZE,
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_TEST_SIZE,
+    DEFAULT_VAL_SIZE,
     cache_is_complete,
     default_cache_path,
     load_cache,
 )
 from benchmark.scripts.experiment_utils import canonical_dataset_list
+from benchmark.scripts.msplit_benchmark_defaults import (
+    DEFAULT_EXACTIFY_TOP_K,
+    DEFAULT_LOOKAHEAD_DEPTH,
+    DEFAULT_MAX_BRANCHING,
+    DEFAULT_MIN_SPLIT_SIZE,
+    DEFAULT_REG,
+)
 
 ensure_repo_import_paths(include_shapecart=True)
 
@@ -87,21 +100,27 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--depths", nargs="+", type=int, default=[2, 3, 4, 5, 6])
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--test-size", type=float, default=0.2)
-    parser.add_argument("--val-size", type=float, default=0.125)
-    parser.add_argument("--max-bins", type=int, default=1024)
-    parser.add_argument("--min-samples-leaf", type=int, default=8)
-    parser.add_argument("--min-child-size", type=int, default=8)
+    parser.add_argument("--test-size", type=float, default=DEFAULT_TEST_SIZE)
+    parser.add_argument("--val-size", type=float, default=DEFAULT_VAL_SIZE)
+    parser.add_argument("--max-bins", type=int, default=DEFAULT_MAX_BINS)
+    parser.add_argument("--min-samples-leaf", type=int, default=DEFAULT_MIN_SAMPLES_LEAF)
+    parser.add_argument("--min-child-size", type=int, default=DEFAULT_MIN_CHILD_SIZE)
     parser.add_argument(
         "--cache-version",
         type=int,
         default=DEFAULT_CACHE_VERSION,
         help="Cache file version suffix used when locating cached LightGBM bins.",
     )
-    parser.add_argument("--lookahead-depth", type=int, default=2)
-    parser.add_argument("--reg", type=float, default=0.0005)
-    parser.add_argument("--max-branching", type=int, default=3)
-    parser.add_argument("--lgb-num-threads", type=int, default=6)
+    parser.add_argument("--lookahead-depth", type=int, default=DEFAULT_LOOKAHEAD_DEPTH)
+    parser.add_argument("--reg", type=float, default=DEFAULT_REG)
+    parser.add_argument("--max-branching", type=int, default=DEFAULT_MAX_BRANCHING)
+    parser.add_argument("--lgb-num-threads", type=int, default=DEFAULT_LGB_NUM_THREADS)
+    parser.add_argument(
+        "--exactify-top-k",
+        type=int,
+        default=DEFAULT_EXACTIFY_TOP_K,
+        help="Exactify at most this many shortlisted MSPLIT candidates per node above lookahead depth.",
+    )
     parser.add_argument(
         "--msplit-min-child-size",
         type=int,
@@ -111,7 +130,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--msplit-min-split-size",
         type=int,
-        default=None,
+        default=DEFAULT_MIN_SPLIT_SIZE,
         help="Override the MSPLIT split-size threshold passed to the cached benchmark.",
     )
     parser.add_argument("--linear-build-dir", type=str, default="build-linear-py")
@@ -159,27 +178,10 @@ def _parse_args() -> argparse.Namespace:
         help="Allow writing into an existing run directory and overwrite its tables.",
     )
     parser.add_argument("--no-plots", action="store_true", help="Skip generating accuracy-vs-depth plots.")
-    return parser.parse_args()
-
-
-def _load_cache_for_dataset(spec: CacheSpec) -> dict[str, np.ndarray]:
-    cache_path = default_cache_path(
-        dataset=spec.dataset,
-        seed=spec.seed,
-        test_size=spec.test_size,
-        val_size=spec.val_size,
-        max_bins=spec.max_bins,
-        min_samples_leaf=spec.min_samples_leaf,
-        min_child_size=spec.min_child_size,
-        cache_version=spec.cache_version,
-    )
-    if not cache_path.exists():
-        raise FileNotFoundError(f"Missing cache file: {cache_path}")
-    cache = load_cache(cache_path)
-    ok, missing = cache_is_complete(cache)
-    if not ok:
-        raise RuntimeError(f"Stale cache file {cache_path}: missing {missing}")
-    return cache
+    args = parser.parse_args()
+    if args.exactify_top_k is not None and int(args.exactify_top_k) < 1:
+        raise ValueError("--exactify-top-k must be a positive integer when specified")
+    return args
 
 
 def _build_cache_for_dataset(
@@ -271,6 +273,7 @@ def _ensure_cache_for_dataset(
 def _build_msplit_command(
     *,
     dataset: str,
+    seed: int,
     depth: int,
     cache_path: Path,
     lookahead_depth: int,
@@ -283,6 +286,7 @@ def _build_msplit_command(
     test_size: float,
     val_size: float,
     json_path: Path,
+    exactify_top_k: int | None = None,
     msplit_min_child_size: int | None = None,
     msplit_min_split_size: int | None = None,
 ) -> list[str]:
@@ -298,7 +302,7 @@ def _build_msplit_command(
         "--lookahead-depth",
         str(int(lookahead_depth)),
         "--seed",
-        "0",
+        str(int(seed)),
         "--test-size",
         str(float(test_size)),
         "--val-size",
@@ -307,8 +311,6 @@ def _build_msplit_command(
         str(int(max_bins)),
         "--min-samples-leaf",
         str(int(min_samples_leaf)),
-        "--min-child-size",
-        str(int(min_child_size)),
         "--max-branching",
         str(int(max_branching)),
         "--reg",
@@ -318,16 +320,19 @@ def _build_msplit_command(
         "--json",
         str(json_path),
     ]
-    if msplit_min_child_size is not None:
-        cmd.extend(["--min-child-size", str(int(msplit_min_child_size))])
+    resolved_min_child_size = min_child_size if msplit_min_child_size is None else msplit_min_child_size
+    cmd.extend(["--min-child-size", str(int(resolved_min_child_size))])
     if msplit_min_split_size is not None:
         cmd.extend(["--min-split-size", str(int(msplit_min_split_size))])
+    if exactify_top_k is not None:
+        cmd.extend(["--exactify-top-k", str(int(exactify_top_k))])
     return cmd
 
 
 def _run_msplit_variant(
     *,
     dataset: str,
+    seed: int,
     depth: int,
     variant: str,
     build_dir: str,
@@ -342,6 +347,7 @@ def _run_msplit_variant(
     test_size: float,
     val_size: float,
     out_dir: Path,
+    exactify_top_k: int | None = None,
     msplit_min_child_size: int | None = None,
     msplit_min_split_size: int | None = None,
 ) -> dict[str, object]:
@@ -353,6 +359,7 @@ def _run_msplit_variant(
 
     cmd = _build_msplit_command(
         dataset=dataset,
+        seed=seed,
         depth=depth,
         cache_path=cache_path,
         lookahead_depth=lookahead_depth,
@@ -365,6 +372,7 @@ def _run_msplit_variant(
         test_size=float(test_size),
         val_size=float(val_size),
         json_path=json_path,
+        exactify_top_k=exactify_top_k,
         msplit_min_child_size=msplit_min_child_size,
         msplit_min_split_size=msplit_min_split_size,
     )
@@ -621,6 +629,7 @@ def main() -> int:
             print(f"[run] dataset={dataset} depth={depth} algorithm=msplit_linear", flush=True)
             linear_row = _run_msplit_variant(
                 dataset=dataset,
+                seed=int(args.seed),
                 depth=depth,
                 variant="msplit_linear",
                 build_dir=str(args.linear_build_dir),
@@ -635,6 +644,11 @@ def main() -> int:
                 test_size=float(args.test_size),
                 val_size=float(args.val_size),
                 out_dir=out_dir,
+                exactify_top_k=(
+                    int(args.exactify_top_k)
+                    if args.exactify_top_k is not None
+                    else None
+                ),
                 msplit_min_child_size=(
                     int(args.msplit_min_child_size)
                     if args.msplit_min_child_size is not None
@@ -651,6 +665,7 @@ def main() -> int:
             print(f"[run] dataset={dataset} depth={depth} algorithm=msplit_nonlinear", flush=True)
             nonlinear_row = _run_msplit_variant(
                 dataset=dataset,
+                seed=int(args.seed),
                 depth=depth,
                 variant="msplit_nonlinear",
                 build_dir=str(args.nonlinear_build_dir),
@@ -665,6 +680,11 @@ def main() -> int:
                 test_size=float(args.test_size),
                 val_size=float(args.val_size),
                 out_dir=out_dir,
+                exactify_top_k=(
+                    int(args.exactify_top_k)
+                    if args.exactify_top_k is not None
+                    else None
+                ),
                 msplit_min_child_size=(
                     int(args.msplit_min_child_size)
                     if args.msplit_min_child_size is not None

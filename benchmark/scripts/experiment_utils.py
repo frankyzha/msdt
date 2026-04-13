@@ -72,6 +72,8 @@ class SimpleTabularPreprocessor:
         self.numeric_medians_: dict[str, float] = {}
         self.categorical_categories_: dict[str, list[object]] = {}
         self.categorical_modes_: dict[str, object] = {}
+        self.categorical_fill_codes_: dict[str, int] = {}
+        self.feature_slices_: dict[str, slice] = {}
         self.feature_names_out_: list[str] = []
         self._fitted = False
 
@@ -85,18 +87,29 @@ class SimpleTabularPreprocessor:
         return arr
 
     def fit(self, X) -> "SimpleTabularPreprocessor":
+        self.numeric_cols_ = []
+        self.categorical_cols_ = []
+        self.numeric_medians_ = {}
+        self.categorical_categories_ = {}
+        self.categorical_modes_ = {}
+        self.categorical_fill_codes_ = {}
+        self.feature_slices_ = {}
+        self.feature_names_out_ = []
+
         if self._is_dataframe(X):
             df = X.reset_index(drop=True).copy()
             self.numeric_cols_ = list(df.select_dtypes(include=[np.number]).columns)
             self.categorical_cols_ = [c for c in df.columns if c not in self.numeric_cols_]
-            self.feature_names_out_ = []
+            offset = 0
 
             for col in self.numeric_cols_:
                 values = self._to_1d_float(df[col])
                 finite = values[np.isfinite(values)]
                 med = float(np.median(finite)) if finite.size > 0 else 0.0
                 self.numeric_medians_[str(col)] = med
+                self.feature_slices_[str(col)] = slice(offset, offset + 1)
                 self.feature_names_out_.append(str(col))
+                offset += 1
 
             for col in self.categorical_cols_:
                 series = pd.Series(df[col], copy=False).astype(object)
@@ -109,7 +122,11 @@ class SimpleTabularPreprocessor:
                     mode_value = non_missing.value_counts(dropna=True).index[0]
                 self.categorical_categories_[str(col)] = categories
                 self.categorical_modes_[str(col)] = mode_value
-                self.feature_names_out_.extend([f"{col}__{cat}" for cat in categories])
+                self.categorical_fill_codes_[str(col)] = categories.index(mode_value)
+                width = len(categories)
+                self.feature_slices_[str(col)] = slice(offset, offset + width)
+                self.feature_names_out_.extend(f"{col}__{cat}" for cat in categories)
+                offset += width
         else:
             arr = np.asarray(X, dtype=float)
             if arr.ndim != 2:
@@ -118,6 +135,7 @@ class SimpleTabularPreprocessor:
             self.numeric_cols_ = [f"x{i}" for i in range(n_features)]
             self.categorical_cols_ = []
             self.feature_names_out_ = list(self.numeric_cols_)
+            self.feature_slices_ = {col: slice(j, j + 1) for j, col in enumerate(self.numeric_cols_)}
             for j in range(n_features):
                 values = arr[:, j]
                 finite = values[np.isfinite(values)]
@@ -133,7 +151,10 @@ class SimpleTabularPreprocessor:
         if self._is_dataframe(X):
             df = X.reset_index(drop=True).copy()
             n_rows = int(df.shape[0])
-            arrays: list[np.ndarray] = []
+            n_features = len(self.feature_names_out_)
+            if n_features == 0:
+                return np.zeros((n_rows, 0), dtype=np.float32)
+            out = np.zeros((n_rows, n_features), dtype=np.float32)
 
             for col in self.numeric_cols_:
                 values = self._to_1d_float(df[col])
@@ -142,21 +163,28 @@ class SimpleTabularPreprocessor:
                 if np.any(mask):
                     values = values.copy()
                     values[mask] = fill
-                arrays.append(values.reshape(-1, 1))
+                feature_idx = self.feature_slices_[col].start
+                if feature_idx is None:
+                    raise RuntimeError(f"Missing numeric feature slice for column {col!r}")
+                out[:, feature_idx] = values.astype(np.float32, copy=False)
 
             for col in self.categorical_cols_:
                 categories = self.categorical_categories_[col]
                 mode_value = self.categorical_modes_[col]
-                values = pd.Series(df[col], copy=False).astype(object).to_numpy(dtype=object, copy=True)
-                mask = pd.isna(values)
-                if np.any(mask):
-                    values[mask] = mode_value
-                for cat in categories:
-                    arrays.append((values == cat).astype(np.float64).reshape(n_rows, 1))
-
-            if not arrays:
-                return np.zeros((n_rows, 0), dtype=np.float32)
-            return np.concatenate(arrays, axis=1).astype(np.float32, copy=False)
+                values = pd.Series(df[col], copy=False).astype(object)
+                if values.isna().any():
+                    values = values.where(~values.isna(), mode_value)
+                codes = pd.Categorical(values, categories=categories).codes
+                unknown_mask = codes < 0
+                if np.any(unknown_mask):
+                    codes = codes.copy()
+                    codes[unknown_mask] = self.categorical_fill_codes_[col]
+                feature_slice = self.feature_slices_[col]
+                start = feature_slice.start
+                if start is None:
+                    raise RuntimeError(f"Missing categorical feature slice for column {col!r}")
+                out[np.arange(n_rows), start + codes] = 1.0
+            return out
 
         arr = np.asarray(X, dtype=float)
         if arr.ndim != 2:

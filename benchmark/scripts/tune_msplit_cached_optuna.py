@@ -24,14 +24,20 @@ if str(REPO_ROOT) not in sys.path:
 
 from benchmark.scripts.benchmark_teacher_guided_atomcolor_cached import run_cached_msplit
 from benchmark.scripts.cache_utils import (
-    _protocol_split_indices,
+    DEFAULT_LGB_NUM_THREADS,
+    DEFAULT_MAX_BINS,
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_TEST_SIZE,
     build_cache,
     default_cache_path,
-    derive_min_child_size,
-    derive_min_split_size,
     resolve_compatible_cache,
+    resolve_protocol_support_sizes,
 )
-from benchmark.scripts.experiment_utils import DATASET_LOADERS, encode_target
+from benchmark.scripts.msplit_benchmark_defaults import (
+    DEFAULT_EXACTIFY_TOP_K,
+    DEFAULT_LOOKAHEAD_DEPTH,
+    DEFAULT_MAX_BRANCHING,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -40,22 +46,22 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset", default="electricity")
     parser.add_argument("--depth", type=int, required=True)
-    parser.add_argument("--lookahead-depth", type=int, default=3)
+    parser.add_argument("--lookahead-depth", type=int, default=DEFAULT_LOOKAHEAD_DEPTH)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--test-size", type=float, default=0.2)
+    parser.add_argument("--test-size", type=float, default=DEFAULT_TEST_SIZE)
     parser.add_argument("--val-size", type=float, required=True)
-    parser.add_argument("--max-bins", type=int, default=1024)
-    parser.add_argument("--min-samples-leaf", type=int, default=8)
+    parser.add_argument("--max-bins", type=int, default=DEFAULT_MAX_BINS)
+    parser.add_argument("--min-samples-leaf", type=int, default=DEFAULT_MIN_SAMPLES_LEAF)
     parser.add_argument("--min-child-size", type=int, default=4)
     parser.add_argument("--min-split-size", type=int, default=8)
     parser.add_argument("--leaf-frac", type=float, default=0.001)
-    parser.add_argument("--max-branching", type=int, default=3)
+    parser.add_argument("--max-branching", type=int, default=DEFAULT_MAX_BRANCHING)
     parser.add_argument("--n-trials", type=int, default=50)
     parser.add_argument("--reg-min", type=float, default=1e-6)
     parser.add_argument("--reg-max", type=float, default=5e-4)
     parser.add_argument("--family-mode", choices=("single", "dual"), default="single")
-    parser.add_argument("--lgb-num-threads", type=int, default=3)
-    parser.add_argument("--exactify-top-k", type=int, default=None)
+    parser.add_argument("--lgb-num-threads", type=int, default=DEFAULT_LGB_NUM_THREADS)
+    parser.add_argument("--exactify-top-k", type=int, default=DEFAULT_EXACTIFY_TOP_K)
     parser.add_argument("--force-rebuild-cache", action="store_true")
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args()
@@ -80,22 +86,18 @@ def _configure_family_mode(mode: str) -> None:
         os.environ["MSPLIT_ATOM_FAMILY_MODE"] = "single"
 
 
-def _load_or_build_cache(args: argparse.Namespace) -> tuple[dict[str, np.ndarray], Path, dict[str, object], bool, bool]:
-    preview_X, preview_y = DATASET_LOADERS[args.dataset]()
-    preview_y_bin, _, _ = encode_target(preview_y)
-    split_idx = _protocol_split_indices(
-        y_encoded=np.asarray(preview_y_bin, dtype=np.int32),
+def _load_or_build_cache(
+    args: argparse.Namespace,
+) -> tuple[dict[str, np.ndarray], Path, dict[str, object], bool, bool, int, int]:
+    _, resolved_min_child_size, resolved_min_split_size = resolve_protocol_support_sizes(
+        dataset=args.dataset,
         seed=int(args.seed),
         test_size=float(args.test_size),
         val_size=float(args.val_size),
+        leaf_frac=float(args.leaf_frac),
+        min_child_size=int(args.min_child_size),
+        min_split_size=int(args.min_split_size),
     )
-    n_fit = int(split_idx["idx_fit"].shape[0])
-    resolved_min_child_size = int(args.min_child_size)
-    if resolved_min_child_size <= 0:
-        resolved_min_child_size = derive_min_child_size(leaf_frac=float(args.leaf_frac), n_fit=n_fit)
-    resolved_min_split_size = int(args.min_split_size)
-    if resolved_min_split_size <= 0:
-        resolved_min_split_size = derive_min_split_size(leaf_frac=float(args.leaf_frac), n_fit=n_fit)
 
     cache_path = default_cache_path(
         args.dataset,
@@ -113,7 +115,15 @@ def _load_or_build_cache(args: argparse.Namespace) -> tuple[dict[str, np.ndarray
     )
     needs_val_bins = "Z_val" not in cache or "y_val" not in cache
     if cache_hit and not needs_val_bins:
-        return cache, cache_resolved_path, cache_meta, cache_hit, cache_used_fallback
+        return (
+            cache,
+            cache_resolved_path,
+            cache_meta,
+            cache_hit,
+            cache_used_fallback,
+            resolved_min_child_size,
+            resolved_min_split_size,
+        )
 
     if cache_hit and needs_val_bins:
         print(f"[cache] rebuilding because validation bins are missing in {cache_resolved_path}", flush=True)
@@ -134,7 +144,15 @@ def _load_or_build_cache(args: argparse.Namespace) -> tuple[dict[str, np.ndarray
     )
     cache_meta_path = cache_resolved_path.with_suffix(".json")
     cache_meta = json.loads(cache_meta_path.read_text(encoding="utf-8")) if cache_meta_path.exists() else {}
-    return cache, cache_resolved_path, cache_meta, False, False
+    return (
+        cache,
+        cache_resolved_path,
+        cache_meta,
+        False,
+        False,
+        resolved_min_child_size,
+        resolved_min_split_size,
+    )
 
 
 def main() -> int:
@@ -142,7 +160,15 @@ def main() -> int:
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     _configure_family_mode(args.family_mode)
 
-    cache, cache_path, cache_meta, cache_hit, cache_used_fallback = _load_or_build_cache(args)
+    (
+        cache,
+        cache_path,
+        cache_meta,
+        cache_hit,
+        cache_used_fallback,
+        resolved_min_child_size,
+        resolved_min_split_size,
+    ) = _load_or_build_cache(args)
 
     def _objective(trial) -> float:
         reg = trial.suggest_float("regularization", float(args.reg_min), float(args.reg_max), log=True)
@@ -152,8 +178,8 @@ def main() -> int:
             lookahead_depth=int(args.lookahead_depth),
             reg=float(reg),
             exactify_top_k=args.exactify_top_k,
-            min_split_size=int(args.min_split_size),
-            min_child_size=int(args.min_child_size),
+            min_split_size=resolved_min_split_size,
+            min_child_size=resolved_min_child_size,
             max_branching=int(args.max_branching),
         )
         val_accuracy = result.get("val_accuracy")
@@ -178,8 +204,8 @@ def main() -> int:
         lookahead_depth=int(args.lookahead_depth),
         reg=best_reg,
         exactify_top_k=args.exactify_top_k,
-        min_split_size=int(args.min_split_size),
-        min_child_size=int(args.min_child_size),
+        min_split_size=resolved_min_split_size,
+        min_child_size=resolved_min_child_size,
         max_branching=int(args.max_branching),
     )
 
@@ -207,8 +233,8 @@ def main() -> int:
         "val_size": float(args.val_size),
         "max_bins": int(args.max_bins),
         "min_samples_leaf": int(args.min_samples_leaf),
-        "min_child_size": int(args.min_child_size),
-        "min_split_size": int(args.min_split_size),
+        "min_child_size": int(resolved_min_child_size),
+        "min_split_size": int(resolved_min_split_size),
         "max_branching": int(args.max_branching),
         "n_trials": int(args.n_trials),
         "reg_min": float(args.reg_min),

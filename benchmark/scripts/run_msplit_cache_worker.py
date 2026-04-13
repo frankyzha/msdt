@@ -20,6 +20,7 @@ from benchmark.scripts.benchmark_teacher_guided_atomcolor_cached import (
     root_has_noncontiguous_group,
     tree_stats,
 )
+from benchmark.scripts.msplit_benchmark_defaults import DEFAULT_EXACTIFY_TOP_K
 
 
 def _load_libgosdt(build_dir: str) -> object:
@@ -98,7 +99,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-split-size", type=int, required=True)
     parser.add_argument("--min-child-size", type=int, required=True)
     parser.add_argument("--max-branching", type=int, default=3)
-    parser.add_argument("--exactify-top-k", type=int, default=0)
+    parser.add_argument("--exactify-top-k", type=int, default=DEFAULT_EXACTIFY_TOP_K)
     parser.add_argument("--json", type=Path, required=True)
     return parser.parse_args()
 

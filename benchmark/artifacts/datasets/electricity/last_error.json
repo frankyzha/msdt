@@ -1,9 +1,0 @@
-{
-  "dataset": "electricity",
-  "depth_budget": 3,
-  "error_message": "MSPLIT exceeded time_limit during C++ solve.",
-  "error_type": "RuntimeError",
-  "model": "msplit_atomized",
-  "seed": 0,
-  "traceback": "Traceback (most recent call last):\n  File \"/home/users/yz1075/msdt/run_tabular_depth_benchmarks.py\", line 1125, in _run_dataset\n    row = fit_fn(\n  File \"/home/users/yz1075/msdt/run_tabular_depth_benchmarks.py\", line 693, in _fit_msplit\n    model, binner, Z_train, Z_val, Z_test, derived_min_child = _fit_msplit_model(\n  File \"/home/users/yz1075/msdt/run_tabular_depth_benchmarks.py\", line 665, in _fit_msplit_model\n    model.fit(\n  File \"/home/users/yz1075/msdt/SPLIT-ICML/split/src/split/MSPLIT.py\", line 163, in fit\n    cpp_result = _cpp_msplit_fit(\nRuntimeError: MSPLIT exceeded time_limit during C++ solve.\n"
-}

@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from functools import lru_cache
 import importlib.util
 import json
 import os
+import sys
 import time
 from pathlib import Path
-import sys
 
 import numpy as np
 
@@ -23,29 +25,45 @@ from benchmark.scripts.cache_utils import (
     DEFAULT_CACHE_SEED,
     DEFAULT_LGB_NUM_THREADS,
     DEFAULT_MAX_BINS,
+    DEFAULT_MIN_CHILD_SIZE,
     DEFAULT_MIN_SAMPLES_LEAF,
     DEFAULT_TEST_SIZE,
     DEFAULT_VAL_SIZE,
-    _protocol_split_indices,
     build_cache,
     default_cache_path,
-    derive_min_child_size,
-    derive_min_split_size,
     resolve_compatible_cache,
+    resolve_protocol_support_sizes,
 )
-from benchmark.scripts.experiment_utils import DATASET_LOADERS, encode_target
+from benchmark.scripts.msplit_benchmark_defaults import (
+    DEFAULT_EXACTIFY_TOP_K,
+    DEFAULT_LOOKAHEAD_DEPTH,
+    DEFAULT_MAX_BRANCHING,
+    DEFAULT_MIN_SPLIT_SIZE,
+    DEFAULT_REG,
+)
+from benchmark.scripts.experiment_utils import DATASET_LOADERS
 
 ensure_repo_import_paths(include_msplit_src=True)
 
 
+@lru_cache(maxsize=1)
 def load_local_libgosdt():
     build_override = os.environ.get("MSPLIT_BUILD_DIR")
-    if build_override:
-        build_dir = resolve_msplit_build_dir(build_override)
-    else:
-        build_dir = resolve_msplit_build_dir("build-fast-py")
-    candidates = sorted(build_dir.glob("_libgosdt*.so"))
-    if candidates:
+    build_dir_candidates = (
+        [build_override]
+        if build_override
+        else [
+            # Prefer the maintained nonlinear build when available.
+            "build-nonlinear-py",
+            # Fall back to the historical fast-build name only if it exists locally.
+            "build-fast-py",
+        ]
+    )
+    for build_dir_name in build_dir_candidates:
+        build_dir = resolve_msplit_build_dir(build_dir_name)
+        candidates = sorted(build_dir.glob("_libgosdt*.so"))
+        if not candidates:
+            continue
         so_path = candidates[0]
         spec = importlib.util.spec_from_file_location("split._libgosdt", so_path)
         if spec is None or spec.loader is None:
@@ -62,51 +80,96 @@ def load_local_libgosdt():
     except Exception:
         pass
 
-    raise FileNotFoundError(f"Could not find built _libgosdt extension under {build_dir}")
+    raise FileNotFoundError(
+        "Could not find a built _libgosdt extension. "
+        f"Tried build dirs: {build_dir_candidates}"
+    )
 
 
-def _predict_tree_row(tree: dict[str, object], row: np.ndarray) -> int:
+@dataclass(frozen=True)
+class _CompiledLeaf:
+    prediction: int
+
+
+@dataclass(frozen=True)
+class _CompiledGroup:
+    spans: tuple[tuple[int, int], ...]
+    child: "_CompiledTree"
+    min_lo: int | None
+
+
+@dataclass(frozen=True)
+class _CompiledNode:
+    feature: int
+    fallback_prediction: int
+    groups: tuple[_CompiledGroup, ...]
+
+
+_CompiledTree = _CompiledLeaf | _CompiledNode
+
+
+def _compile_tree(tree: dict[str, object]) -> _CompiledTree:
+    if tree.get("type") != "node":
+        return _CompiledLeaf(prediction=int(tree.get("prediction", 0)))
+
+    groups = []
+    for group in tree.get("groups", []):
+        spans = tuple((int(lo), int(hi)) for lo, hi in group.get("spans", []))
+        groups.append(
+            _CompiledGroup(
+                spans=spans,
+                child=_compile_tree(group["child"]),
+                min_lo=min((lo for lo, _ in spans), default=None),
+            )
+        )
+    return _CompiledNode(
+        feature=int(tree["feature"]),
+        fallback_prediction=int(tree.get("fallback_prediction", 0)),
+        groups=tuple(groups),
+    )
+
+
+def _predict_tree_row(tree: _CompiledTree, row: np.ndarray) -> int:
     cur = tree
-    while cur.get("type") == "node":
-        feature = int(cur["feature"])
-        bin_id = int(row[feature])
+    while isinstance(cur, _CompiledNode):
+        bin_id = int(row[cur.feature])
         next_child = None
         nearest_group = None
         best_dist = None
         best_lo = None
-        for group in cur.get("groups", []):
-            spans = group.get("spans", [])
-            for lo, hi in spans:
-                if int(lo) <= bin_id <= int(hi):
-                    next_child = group["child"]
+        for group in cur.groups:
+            for lo, hi in group.spans:
+                if lo <= bin_id <= hi:
+                    next_child = group.child
                     break
             if next_child is not None:
                 break
-            if not spans:
+            if not group.spans:
                 continue
-            group_lo = min(int(lo) for lo, _ in spans)
             group_dist = min(
-                0 if int(lo) <= bin_id <= int(hi) else min(abs(bin_id - int(lo)), abs(bin_id - int(hi)))
-                for lo, hi in spans
+                min(abs(bin_id - lo), abs(bin_id - hi))
+                for lo, hi in group.spans
             )
             if best_dist is None or group_dist < best_dist or (
-                group_dist == best_dist and (best_lo is None or group_lo < best_lo)
+                group_dist == best_dist and (best_lo is None or (group.min_lo is not None and group.min_lo < best_lo))
             ):
                 best_dist = group_dist
-                best_lo = group_lo
+                best_lo = group.min_lo
                 nearest_group = group
-        if next_child is None:
-            if nearest_group is None:
-                return int(cur.get("fallback_prediction", 0))
-            next_child = nearest_group["child"]
-        cur = next_child
-    return int(cur.get("prediction", 0))
+        if next_child is not None:
+            cur = next_child
+            continue
+        if nearest_group is None:
+            return cur.fallback_prediction
+        cur = nearest_group.child
+    return cur.prediction
 
 
 def predict_tree(tree: dict[str, object], z: np.ndarray) -> np.ndarray:
+    compiled_tree = _compile_tree(tree)
     preds = np.empty(z.shape[0], dtype=np.int32)
-    for i in range(z.shape[0]):
-        preds[i] = _predict_tree_row(tree, z[i])
+    for i, row in enumerate(z):
+        preds[i] = _predict_tree_row(compiled_tree, row)
     return preds
 
 
@@ -132,10 +195,7 @@ def tree_stats(tree: dict[str, object]) -> dict[str, int]:
 def root_has_noncontiguous_group(tree: dict[str, object]) -> bool:
     if tree.get("type") != "node":
         return False
-    for group in tree.get("groups", []):
-        if len(group.get("spans", [])) > 1:
-            return True
-    return False
+    return any(len(group.get("spans", [])) > 1 for group in tree.get("groups", []))
 
 
 def run_cached_msplit(
@@ -549,14 +609,14 @@ def main() -> int:
     )
     parser.add_argument("--dataset", default="electricity", choices=sorted(DATASET_LOADERS.keys()))
     parser.add_argument("--depth", type=int, default=4)
-    parser.add_argument("--lookahead-depth", type=int, default=3)
+    parser.add_argument("--lookahead-depth", type=int, default=DEFAULT_LOOKAHEAD_DEPTH)
     parser.add_argument("--seed", type=int, default=DEFAULT_CACHE_SEED)
     parser.add_argument("--test-size", type=float, default=DEFAULT_TEST_SIZE)
     parser.add_argument("--val-size", type=float, default=DEFAULT_VAL_SIZE)
     parser.add_argument("--max-bins", type=int, default=DEFAULT_MAX_BINS)
     parser.add_argument("--min-samples-leaf", type=int, default=DEFAULT_MIN_SAMPLES_LEAF)
-    parser.add_argument("--min-split-size", type=int, default=0)
-    parser.add_argument("--min-child-size", type=int, default=0)
+    parser.add_argument("--min-split-size", type=int, default=DEFAULT_MIN_SPLIT_SIZE)
+    parser.add_argument("--min-child-size", type=int, default=DEFAULT_MIN_CHILD_SIZE)
     parser.add_argument(
         "--leaf-frac",
         type=float,
@@ -567,12 +627,12 @@ def main() -> int:
         ),
     )
     parser.add_argument("--proposal-atom-cap", type=int, default=0)
-    parser.add_argument("--max-branching", type=int, default=3)
-    parser.add_argument("--reg", type=float, default=0.0005)
+    parser.add_argument("--max-branching", type=int, default=DEFAULT_MAX_BRANCHING)
+    parser.add_argument("--reg", type=float, default=DEFAULT_REG)
     parser.add_argument(
         "--exactify-top-k",
         type=int,
-        default=None,
+        default=DEFAULT_EXACTIFY_TOP_K,
         help="If set, exactify at most this many shortlisted candidates per node above lookahead depth.",
     )
     parser.add_argument("--lgb-num-threads", type=int, default=DEFAULT_LGB_NUM_THREADS)
@@ -588,21 +648,15 @@ def main() -> int:
     if args.exactify_top_k is not None and int(args.exactify_top_k) < 1:
         raise ValueError("--exactify-top-k must be a positive integer when specified")
 
-    preview_X, preview_y = DATASET_LOADERS[args.dataset]()
-    preview_y_bin, _, _ = encode_target(preview_y)
-    split_idx = _protocol_split_indices(
-        y_encoded=np.asarray(preview_y_bin, dtype=np.int32),
+    n_fit, resolved_min_child_size, resolved_min_split_size = resolve_protocol_support_sizes(
+        dataset=args.dataset,
         seed=int(args.seed),
         test_size=float(args.test_size),
         val_size=float(args.val_size),
+        leaf_frac=float(args.leaf_frac),
+        min_child_size=int(args.min_child_size),
+        min_split_size=int(args.min_split_size),
     )
-    n_fit = int(split_idx["idx_fit"].shape[0])
-    resolved_min_child_size = int(args.min_child_size)
-    if resolved_min_child_size <= 0:
-        resolved_min_child_size = derive_min_child_size(leaf_frac=float(args.leaf_frac), n_fit=n_fit)
-    resolved_min_split_size = int(args.min_split_size)
-    if resolved_min_split_size <= 0:
-        resolved_min_split_size = derive_min_split_size(leaf_frac=float(args.leaf_frac), n_fit=n_fit)
 
     cache_path = args.cache_path
     if cache_path is None:
@@ -638,6 +692,8 @@ def main() -> int:
             cache_path=cache_resolved_path,
         )
         cache_meta = json.loads(cache_resolved_path.with_suffix(".json").read_text(encoding="utf-8"))
+    if n_fit is None:
+        n_fit = int(np.asarray(cache["idx_fit"]).shape[0])
 
     if args.build_cache_only:
         print(f"[cache] build-only complete: {cache_resolved_path}", flush=True)

@@ -577,6 +577,14 @@ def load_coupon():
 
 
 def _parse_args() -> argparse.Namespace:
+    from benchmark.scripts.cache_utils import (
+        DEFAULT_MAX_BINS,
+        DEFAULT_MIN_CHILD_SIZE,
+        DEFAULT_MIN_SAMPLES_LEAF,
+        DEFAULT_TEST_SIZE,
+        DEFAULT_VAL_SIZE,
+    )
+
     parser = argparse.ArgumentParser(
         description="Download/cache benchmark datasets under benchmark/datasets/<name>/raw.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -587,11 +595,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--skip-cache", action="store_true", help="Download datasets without building benchmark cache.")
     parser.add_argument("--cache-seed", type=int, default=0)
-    parser.add_argument("--cache-test-size", type=float, default=0.2)
-    parser.add_argument("--cache-val-size", type=float, default=0.125)
-    parser.add_argument("--cache-max-bins", type=int, default=1024)
-    parser.add_argument("--cache-min-samples-leaf", type=int, default=8)
-    parser.add_argument("--cache-min-child-size", type=int, default=8)
+    parser.add_argument("--cache-test-size", type=float, default=DEFAULT_TEST_SIZE)
+    parser.add_argument("--cache-val-size", type=float, default=DEFAULT_VAL_SIZE)
+    parser.add_argument("--cache-max-bins", type=int, default=DEFAULT_MAX_BINS)
+    parser.add_argument("--cache-min-samples-leaf", type=int, default=DEFAULT_MIN_SAMPLES_LEAF)
+    parser.add_argument("--cache-min-child-size", type=int, default=DEFAULT_MIN_CHILD_SIZE)
     parser.add_argument("--lgb-num-threads", type=int, default=6)
     return parser.parse_args()
 

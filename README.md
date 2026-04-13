@@ -24,7 +24,9 @@ tree-learning variants:
   Runnable experiment entrypoints:
   - `benchmark_teacher_guided_atomcolor_cached.py`
   - `run_cached_depth_benchmarks_msplit_linear_nonlinear_shapecart.py`
-  - `visualize_multisplit_tree.py`
+  - `visualize_multisplit_tree_n.py`
+  - `visualize_multisplit_tree_color.py`
+  - `visualize_multisplit_tree.py` (compatibility wrapper)
   - `analyze_coupon_linear_nonlinear_shapecart.py`
   - `run_msplit_cache_worker.py`
   - `tune_msplit_cached_optuna.py`
@@ -48,8 +50,7 @@ Build the local `split` extension, then run one of the benchmark scripts under
 `benchmark/scripts/`. For example:
 
 ```bash
-PYTHONPATH=algorithm/msplit/build-fast-py:algorithm/msplit/src \
-python benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py \
+python3 benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py \
   --dataset electricity \
   --depth 6 \
   --lookahead-depth 3
