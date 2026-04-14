@@ -75,13 +75,12 @@ python3 -m pytest algorithm/msplit/tests
 
 ## Notes
 
-- `benchmark/scripts/visualize_multisplit_tree.py` is a compatibility wrapper.
-  The maintained visualization entrypoints are
+- The maintained visualization entrypoints are
   `visualize_multisplit_tree_n.py` and `visualize_multisplit_tree_color.py`.
 - The maintained benchmark entrypoints under `benchmark/scripts/` are
   `benchmark_cached_msplit.py`,
   `benchmark_cached_fixed_config_msplit_vs_shapecart.py`,
   `benchmark_cached_optuna_msplit_vs_shapecart.py`, and
   `benchmark_cached_gridcv_msplit_vs_shapecart.py`.
-- Historical scratch outputs and accidental build artifacts have been pruned so
-  the repository reflects the active benchmark and solver layout.
+- Generated benchmark artifacts are intentionally ignored so the repository
+  stays focused on code, datasets, and reproducible entrypoints.

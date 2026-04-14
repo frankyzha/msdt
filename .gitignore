@@ -216,18 +216,7 @@ datasets_electricity_nohup.log
 
 # Benchmark caches and generated artifacts
 benchmark/cache/
-benchmark/artifacts/*
-!benchmark/artifacts/datasets/
-benchmark/artifacts/datasets/*
-!benchmark/artifacts/datasets/README.md
-!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/
-benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/*
-!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/README.md
-!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/
-!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/summary_by_depth.csv
-benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/*
-!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/accuracy_vs_depth_test.png
-!benchmark/artifacts/datasets/coupon_legacy_msplit_atomized/plots/accuracy_vs_depth_val.png
+benchmark/artifacts/
 
 # Ruff stuff:
 .ruff_cache/
