@@ -9,6 +9,8 @@ Do not treat this directory as the current benchmark source of truth.
 
 For current results, regenerate artifacts with the maintained scripts under `benchmark/scripts/`:
 
-- `benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py`
-- `benchmark/scripts/run_cached_depth_benchmarks_msplit_linear_nonlinear_shapecart.py`
-- `benchmark/scripts/analyze_coupon_linear_nonlinear_shapecart.py`
+- `benchmark/scripts/benchmark_cached_msplit.py`
+- `benchmark/scripts/benchmark_cached_optuna_msplit_vs_shapecart.py`
+- `benchmark/scripts/benchmark_cached_gridcv_msplit_vs_shapecart.py`
+- `benchmark/scripts/benchmark_cached_fixed_config_msplit_vs_shapecart.py`
+- `benchmark/scripts/analyze_coupon_msplit_linear_nonlinear_vs_shapecart.py`

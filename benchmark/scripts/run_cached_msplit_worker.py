@@ -5,7 +5,6 @@ import argparse
 import importlib.util
 import json
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -15,12 +14,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from benchmark.scripts.benchmark_paths import resolve_msplit_build_dir
-from benchmark.scripts.benchmark_teacher_guided_atomcolor_cached import (
+from benchmark.scripts.benchmark_cached_msplit import (
     predict_tree,
     root_has_noncontiguous_group,
     tree_stats,
 )
 from benchmark.scripts.msplit_benchmark_defaults import DEFAULT_EXACTIFY_TOP_K
+from benchmark.scripts.runtime_guard import guarded_fit
 
 
 def _load_libgosdt(build_dir: str) -> object:
@@ -116,25 +116,26 @@ def main() -> int:
     teacher_logit = np.asarray(cache["teacher_logit"], dtype=np.float64)
     sample_weight = np.full(z_fit.shape[0], 1.0 / float(max(1, z_fit.shape[0])), dtype=np.float64)
 
-    started = time.perf_counter()
-    cpp_result = libgosdt.msplit_fit(
-        z_fit,
-        y_fit,
-        sample_weight,
-        teacher_logit,
-        np.asarray(cache["teacher_boundary_gain"], dtype=np.float64),
-        np.asarray(cache["teacher_boundary_cover"], dtype=np.float64),
-        np.asarray(cache["teacher_boundary_value_jump"], dtype=np.float64),
-        int(args.depth),
-        int(args.lookahead_depth),
-        float(args.reg),
-        int(args.min_split_size),
-        int(args.min_child_size),
-        28800.0,
-        int(args.max_branching),
-        int(args.exactify_top_k),
-    )
-    fit_seconds = time.perf_counter() - started
+    def _run_once() -> dict[str, object]:
+        return libgosdt.msplit_fit(
+            z_fit,
+            y_fit,
+            sample_weight,
+            teacher_logit,
+            np.asarray(cache["teacher_boundary_gain"], dtype=np.float64),
+            np.asarray(cache["teacher_boundary_cover"], dtype=np.float64),
+            np.asarray(cache["teacher_boundary_value_jump"], dtype=np.float64),
+            int(args.depth),
+            int(args.lookahead_depth),
+            float(args.reg),
+            int(args.min_split_size),
+            int(args.min_child_size),
+            28800.0,
+            int(args.max_branching),
+            int(args.exactify_top_k),
+        )
+
+    cpp_result, fit_seconds, timing_guard = guarded_fit(_run_once, repo_root=REPO_ROOT)
 
     tree = json.loads(str(cpp_result["tree"]))
     pred_train = predict_tree(tree, z_fit)
@@ -156,6 +157,7 @@ def main() -> int:
         "max_arity": int(stats["max_arity"]),
         "noncontiguous_group_count": int(span_counts["noncontiguous_groups"]),
         "groups_with_multiple_spans": int(span_counts["groups_with_multiple_spans"]),
+        "timing_guard": timing_guard,
         "tree": tree,
     }
 

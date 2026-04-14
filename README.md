@@ -49,7 +49,7 @@ The build expects the native dependencies declared in
 Run the benchmark driver:
 
 ```bash
-python3 benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py \
+python3 benchmark/scripts/benchmark_cached_msplit.py \
   --dataset electricity \
   --depth 6 \
   --lookahead-depth 3
@@ -58,7 +58,13 @@ python3 benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py \
 Run the comparison benchmark sweep:
 
 ```bash
-python3 benchmark/scripts/run_cached_depth_benchmarks_msplit_linear_nonlinear_shapecart.py
+python3 benchmark/scripts/benchmark_cached_fixed_config_msplit_vs_shapecart.py
+```
+
+Run the coupon subset comparison study:
+
+```bash
+python3 benchmark/scripts/analyze_coupon_msplit_linear_nonlinear_vs_shapecart.py
 ```
 
 Run the MSPLIT tests:
@@ -72,5 +78,10 @@ python3 -m pytest algorithm/msplit/tests
 - `benchmark/scripts/visualize_multisplit_tree.py` is a compatibility wrapper.
   The maintained visualization entrypoints are
   `visualize_multisplit_tree_n.py` and `visualize_multisplit_tree_color.py`.
+- The maintained benchmark entrypoints under `benchmark/scripts/` are
+  `benchmark_cached_msplit.py`,
+  `benchmark_cached_fixed_config_msplit_vs_shapecart.py`,
+  `benchmark_cached_optuna_msplit_vs_shapecart.py`, and
+  `benchmark_cached_gridcv_msplit_vs_shapecart.py`.
 - Historical scratch outputs and accidental build artifacts have been pruned so
   the repository reflects the active benchmark and solver layout.

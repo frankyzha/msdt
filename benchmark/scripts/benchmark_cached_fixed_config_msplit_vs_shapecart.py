@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare cached LightGBM-binned MSPLIT variants against ShapeCART.
+"""Run a fixed-config cached comparison for MSPLIT variants vs ShapeCART.
 
 This runner consumes the precomputed cached LightGBM bins under
 `benchmark/cache` and compares:
@@ -10,6 +10,9 @@ This runner consumes the precomputed cached LightGBM bins under
 
 The benchmark is depth-swept and reports train/test accuracy, fit time,
 internal node count, and leaf count for each algorithm.
+
+The cache is required. If the requested cached protocol artifact is missing,
+the run fails instead of retraining LightGBM inside the benchmark.
 """
 
 from __future__ import annotations
@@ -40,9 +43,8 @@ from benchmark.scripts.cache_utils import (
     DEFAULT_MIN_SAMPLES_LEAF,
     DEFAULT_TEST_SIZE,
     DEFAULT_VAL_SIZE,
-    cache_is_complete,
     default_cache_path,
-    load_cache,
+    resolve_compatible_cache,
 )
 from benchmark.scripts.experiment_utils import canonical_dataset_list
 from benchmark.scripts.msplit_benchmark_defaults import (
@@ -52,6 +54,7 @@ from benchmark.scripts.msplit_benchmark_defaults import (
     DEFAULT_MIN_SPLIT_SIZE,
     DEFAULT_REG,
 )
+from benchmark.scripts.runtime_guard import guarded_fit
 
 ensure_repo_import_paths(include_shapecart=True)
 
@@ -169,7 +172,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--results-root",
         type=str,
-        default=str(BENCHMARK_ARTIFACTS_ROOT / "comparison_cached_msplit_linear_nonlinear_shapecart"),
+        default=str(BENCHMARK_ARTIFACTS_ROOT / "benchmarks" / "cached_fixed_config_msplit_vs_shapecart"),
     )
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
@@ -184,61 +187,11 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _build_cache_for_dataset(
-    *,
-    spec: CacheSpec,
-    cache_path: Path,
-    build_depth: int,
-    lgb_num_threads: int,
-) -> None:
-    cmd = [
-        sys.executable,
-        str(SCRIPT_ROOT / "benchmark_teacher_guided_atomcolor_cached.py"),
-        "--dataset",
-        spec.dataset,
-        "--depth",
-        str(int(build_depth)),
-        "--seed",
-        str(int(spec.seed)),
-        "--test-size",
-        str(float(spec.test_size)),
-        "--val-size",
-        str(float(spec.val_size)),
-        "--max-bins",
-        str(int(spec.max_bins)),
-        "--min-samples-leaf",
-        str(int(spec.min_samples_leaf)),
-        "--min-child-size",
-        str(int(spec.min_child_size)),
-        "--lgb-num-threads",
-        str(int(lgb_num_threads)),
-        "--cache-path",
-        str(cache_path),
-        "--force-rebuild-cache",
-        "--build-cache-only",
-    ]
-    print(f"[cache] building missing cache for {spec.dataset}: {cache_path}", flush=True)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Cache build failed for "
-            f"dataset={spec.dataset}\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
-        )
-    if result.stdout.strip():
-        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
-    if result.stderr.strip():
-        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
-
-
 def _ensure_cache_for_dataset(
     *,
     spec: CacheSpec,
-    build_depth: int,
-    lgb_num_threads: int,
 ) -> tuple[Path, dict[str, np.ndarray]]:
-    cache_path = default_cache_path(
+    requested_cache_path = default_cache_path(
         dataset=spec.dataset,
         seed=spec.seed,
         test_size=spec.test_size,
@@ -248,25 +201,21 @@ def _ensure_cache_for_dataset(
         min_child_size=spec.min_child_size,
         cache_version=spec.cache_version,
     )
-    if cache_path.exists():
-        cache = load_cache(cache_path)
-        ok, missing = cache_is_complete(cache)
-        if ok:
-            return cache_path, cache
-        print(f"[cache] stale cache file {cache_path}: missing {missing}", flush=True)
-    else:
-        print(f"[cache] missing cache file {cache_path}", flush=True)
-
-    _build_cache_for_dataset(
-        spec=spec,
-        cache_path=cache_path,
-        build_depth=build_depth,
-        lgb_num_threads=lgb_num_threads,
+    cache_path, cache, _cache_meta, cache_hit, cache_used_fallback = resolve_compatible_cache(
+        requested_cache_path,
+        force_rebuild=False,
     )
-    cache = load_cache(cache_path)
-    ok, missing = cache_is_complete(cache)
-    if not ok:
-        raise RuntimeError(f"Cache build completed but file is still incomplete: {cache_path} missing {missing}")
+    if not cache_hit:
+        raise FileNotFoundError(
+            "Required benchmark cache is missing. "
+            f"expected={requested_cache_path}"
+        )
+    if cache_used_fallback:
+        print(
+            f"[cache] using compatible cached protocol for {spec.dataset}: "
+            f"requested={requested_cache_path} resolved={cache_path}",
+            flush=True,
+        )
     return cache_path, cache
 
 
@@ -292,7 +241,7 @@ def _build_msplit_command(
 ) -> list[str]:
     cmd = [
         sys.executable,
-        str(SCRIPT_ROOT / "benchmark_teacher_guided_atomcolor_cached.py"),
+        str(SCRIPT_ROOT / "benchmark_cached_msplit.py"),
         "--dataset",
         dataset,
         "--cache-path",
@@ -436,28 +385,30 @@ def _fit_shapecart(
     y_fit = np.asarray(cache["y_fit"], dtype=np.int32)
     y_test = np.asarray(cache["y_test"], dtype=np.int32)
 
-    model = ShapeCARTClassifier(
-        max_depth=int(depth),
-        min_samples_leaf=int(shape_min_samples_leaf),
-        min_samples_split=int(shape_min_samples_split),
-        inner_min_samples_leaf=int(shape_min_samples_leaf),
-        inner_min_samples_split=int(shape_min_samples_split),
-        inner_max_depth=int(shape_inner_max_depth),
-        inner_max_leaf_nodes=int(shape_inner_max_leaf_nodes),
-        max_iter=int(shape_max_iter),
-        k=int(shape_k),
-        branching_penalty=0.0,
-        random_state=int(seed),
-        verbose=False,
-        pairwise_candidates=float(shape_pairwise_candidates),
-        smart_init=bool(shape_smart_init),
-        random_pairs=bool(shape_random_pairs),
-        use_dpdt=bool(shape_use_dpdt),
-        use_tao=bool(shape_use_tao),
-    )
-    started = time.perf_counter()
-    model.fit(X_fit, y_fit)
-    fit_time_sec = time.perf_counter() - started
+    def _run_once() -> ShapeCARTClassifier:
+        model = ShapeCARTClassifier(
+            max_depth=int(depth),
+            min_samples_leaf=int(shape_min_samples_leaf),
+            min_samples_split=int(shape_min_samples_split),
+            inner_min_samples_leaf=int(shape_min_samples_leaf),
+            inner_min_samples_split=int(shape_min_samples_split),
+            inner_max_depth=int(shape_inner_max_depth),
+            inner_max_leaf_nodes=int(shape_inner_max_leaf_nodes),
+            max_iter=int(shape_max_iter),
+            k=int(shape_k),
+            branching_penalty=0.0,
+            random_state=int(seed),
+            verbose=False,
+            pairwise_candidates=float(shape_pairwise_candidates),
+            smart_init=bool(shape_smart_init),
+            random_pairs=bool(shape_random_pairs),
+            use_dpdt=bool(shape_use_dpdt),
+            use_tao=bool(shape_use_tao),
+        )
+        model.fit(X_fit, y_fit)
+        return model
+
+    model, fit_time_sec, timing_guard = guarded_fit(_run_once, repo_root=PROJECT_ROOT)
 
     pred_train = np.asarray(model.predict(X_fit), dtype=np.int32)
     pred_test = np.asarray(model.predict(X_test), dtype=np.int32)
@@ -476,6 +427,7 @@ def _fit_shapecart(
         "cache_path": "",
         "build_dir": "",
         "elapsed_wall_sec": float(fit_time_sec),
+        "timing_guard": timing_guard,
     }
 
 
@@ -541,7 +493,7 @@ def main() -> int:
     datasets = canonical_dataset_list(args.datasets)
     depths = sorted(set(int(v) for v in args.depths))
     out_root = Path(args.results_root)
-    run_name = args.run_name or datetime.now().strftime("cached_msplit_linear_nonlinear_shapecart_%Y%m%d_%H%M%S")
+    run_name = args.run_name or datetime.now().strftime("cached_fixed_config_msplit_vs_shapecart_%Y%m%d_%H%M%S")
     out_dir = out_root / run_name
     if out_dir.exists() and any(out_dir.iterdir()) and not args.overwrite:
         raise FileExistsError(f"Output directory already exists and is not empty: {out_dir}")
@@ -593,8 +545,6 @@ def main() -> int:
     long_rows: list[dict[str, object]] = []
     cache_by_dataset: dict[str, dict[str, np.ndarray]] = {}
     cache_path_by_dataset: dict[str, Path] = {}
-    cache_build_depth = int(depths[0]) if depths else 2
-
     for dataset in datasets:
         spec = CacheSpec(
             dataset=dataset,
@@ -608,8 +558,6 @@ def main() -> int:
         )
         cache_path, cache = _ensure_cache_for_dataset(
             spec=spec,
-            build_depth=cache_build_depth,
-            lgb_num_threads=int(args.lgb_num_threads),
         )
         cache_by_dataset[dataset] = cache
         cache_path_by_dataset[dataset] = cache_path

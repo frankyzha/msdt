@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+"""Legacy MSPLIT-only tuning helper.
+
+This utility is kept for focused single-algorithm experiments. The maintained
+benchmark entrypoints for MSPLIT vs ShapeCART are:
+
+- ``benchmark_cached_optuna_msplit_vs_shapecart.py``
+- ``benchmark_cached_gridcv_msplit_vs_shapecart.py``
+- ``benchmark_cached_fixed_config_msplit_vs_shapecart.py``
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -22,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from benchmark.scripts.benchmark_teacher_guided_atomcolor_cached import run_cached_msplit
+from benchmark.scripts.benchmark_cached_msplit import run_cached_msplit
 from benchmark.scripts.cache_utils import (
     DEFAULT_LGB_NUM_THREADS,
     DEFAULT_MAX_BINS,
@@ -60,6 +70,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--reg-min", type=float, default=1e-6)
     parser.add_argument("--reg-max", type=float, default=5e-4)
     parser.add_argument("--family-mode", choices=("single", "dual"), default="single")
+    parser.add_argument("--timing-mode", choices=("fast", "fair"), default="fast")
     parser.add_argument("--lgb-num-threads", type=int, default=DEFAULT_LGB_NUM_THREADS)
     parser.add_argument("--exactify-top-k", type=int, default=DEFAULT_EXACTIFY_TOP_K)
     parser.add_argument("--force-rebuild-cache", action="store_true")
@@ -84,6 +95,13 @@ def _configure_family_mode(mode: str) -> None:
         os.environ["MSPLIT_ATOM_FAMILY_MODE"] = "dual"
     else:
         os.environ["MSPLIT_ATOM_FAMILY_MODE"] = "single"
+
+
+def _configure_timing_mode(mode: str) -> None:
+    if mode == "fair":
+        os.environ["MSDT_BENCHMARK_GUARD"] = "1"
+    else:
+        os.environ["MSDT_BENCHMARK_GUARD"] = "0"
 
 
 def _load_or_build_cache(
@@ -159,6 +177,7 @@ def main() -> int:
     args = _parse_args()
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     _configure_family_mode(args.family_mode)
+    _configure_timing_mode(args.timing_mode)
 
     (
         cache,
@@ -240,6 +259,7 @@ def main() -> int:
         "reg_min": float(args.reg_min),
         "reg_max": float(args.reg_max),
         "family_mode": args.family_mode,
+        "timing_mode": args.timing_mode,
         "cache_path": str(cache_path),
         "cache_hit": bool(cache_hit),
         "cache_used_compatible_fallback": bool(cache_used_fallback),

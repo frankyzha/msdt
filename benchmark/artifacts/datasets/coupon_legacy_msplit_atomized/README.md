@@ -11,4 +11,4 @@ Why it is legacy:
 - The MSPLIT numbers here are for the older `msplit_atomized` snapshot that was checked in alongside `benchmark/datasets/coupon/run.log`.
 - The aggregate `coupon` task is heterogeneous, so this snapshot should not be used as the main reference for current coupon performance questions.
 
-For current coupon analysis, use `benchmark/scripts/analyze_coupon_linear_nonlinear_shapecart.py`, which evaluates the overall dataset plus the five coupon-type subsets with the maintained cached benchmark workflow.
+For current coupon analysis, use `benchmark/scripts/analyze_coupon_msplit_linear_nonlinear_vs_shapecart.py`, which evaluates the overall dataset plus the five coupon-type subsets with the maintained cached benchmark workflow.

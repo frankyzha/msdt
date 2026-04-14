@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Compare cached coupon variants across MSPLIT linear/nonlinear and ShapeCART."""
+
 from __future__ import annotations
 
 import argparse
@@ -29,6 +31,7 @@ ensure_repo_import_paths(include_shapecart=True)
 from benchmark.scripts.cache_utils import _protocol_split_indices, _slice_rows
 from benchmark.scripts.experiment_utils import encode_binary_target, make_preprocessor
 from benchmark.scripts.lightgbm_binning import fit_lightgbm_binner
+from benchmark.scripts.runtime_guard import guarded_fit
 from src.ShapeCARTClassifier import ShapeCARTClassifier
 
 
@@ -129,28 +132,30 @@ def _fit_shapecart(
     k: int,
     use_tao: bool,
 ) -> dict[str, object]:
-    model = ShapeCARTClassifier(
-        max_depth=int(depth),
-        min_samples_leaf=int(min_samples_leaf),
-        min_samples_split=int(min_samples_split),
-        inner_min_samples_leaf=int(min_samples_leaf),
-        inner_min_samples_split=int(min_samples_split),
-        inner_max_depth=6,
-        inner_max_leaf_nodes=32,
-        max_iter=20,
-        k=int(k),
-        branching_penalty=0.0,
-        random_state=int(seed),
-        verbose=False,
-        pairwise_candidates=0.0,
-        smart_init=True,
-        random_pairs=False,
-        use_dpdt=False,
-        use_tao=bool(use_tao),
-    )
-    started = time.perf_counter()
-    model.fit(x_fit_proc, y_fit)
-    fit_seconds = time.perf_counter() - started
+    def _run_once() -> ShapeCARTClassifier:
+        model = ShapeCARTClassifier(
+            max_depth=int(depth),
+            min_samples_leaf=int(min_samples_leaf),
+            min_samples_split=int(min_samples_split),
+            inner_min_samples_leaf=int(min_samples_leaf),
+            inner_min_samples_split=int(min_samples_split),
+            inner_max_depth=6,
+            inner_max_leaf_nodes=32,
+            max_iter=20,
+            k=int(k),
+            branching_penalty=0.0,
+            random_state=int(seed),
+            verbose=False,
+            pairwise_candidates=0.0,
+            smart_init=True,
+            random_pairs=False,
+            use_dpdt=False,
+            use_tao=bool(use_tao),
+        )
+        model.fit(x_fit_proc, y_fit)
+        return model
+
+    model, fit_seconds, timing_guard = guarded_fit(_run_once, repo_root=REPO_ROOT)
     pred_train = np.asarray(model.predict(x_fit_proc), dtype=np.int32)
     pred_test = np.asarray(model.predict(x_test_proc), dtype=np.int32)
     stats = _tree_stats_shapecart(model)
@@ -167,6 +172,7 @@ def _fit_shapecart(
         "n_leaves": int(stats["n_leaves"]),
         "n_internal": int(stats["n_internal"]),
         "max_arity": int(stats["max_arity"]),
+        "timing_guard": timing_guard,
         "tree": _serialize_shapecart_node(model, 0),
     }
 
@@ -291,7 +297,7 @@ def _run_msplit_worker(
 ) -> dict[str, object]:
     cmd = [
         sys.executable,
-        str(SCRIPT_ROOT / "run_msplit_cache_worker.py"),
+        str(SCRIPT_ROOT / "run_cached_msplit_worker.py"),
         "--cache-path",
         str(cache_path),
         "--build-dir",

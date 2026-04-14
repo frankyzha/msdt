@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Run the cached single-model MSPLIT benchmark on one dataset split."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +10,6 @@ import importlib.util
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,7 @@ from benchmark.scripts.msplit_benchmark_defaults import (
     DEFAULT_MIN_SPLIT_SIZE,
     DEFAULT_REG,
 )
+from benchmark.scripts.runtime_guard import guarded_fit
 from benchmark.scripts.experiment_utils import DATASET_LOADERS
 
 ensure_repo_import_paths(include_msplit_src=True)
@@ -220,25 +222,26 @@ def run_cached_msplit(
     teacher_logit = np.asarray(cache["teacher_logit"], dtype=np.float64)
     sample_weight = np.full(z_fit.shape[0], 1.0 / float(max(1, z_fit.shape[0])), dtype=np.float64)
 
-    started = time.perf_counter()
-    cpp_result = libgosdt.msplit_fit(
-        z_fit,
-        y_fit,
-        sample_weight,
-        teacher_logit,
-        np.asarray(cache["teacher_boundary_gain"], dtype=np.float64),
-        np.asarray(cache["teacher_boundary_cover"], dtype=np.float64),
-        np.asarray(cache["teacher_boundary_value_jump"], dtype=np.float64),
-        int(depth),
-        int(lookahead_depth),
-        float(reg),
-        int(min_split_size),
-        int(min_child_size),
-        28800.0,
-        int(max_branching),
-        int(exactify_top_k) if exactify_top_k is not None else 0,
-    )
-    fit_seconds = time.perf_counter() - started
+    def _run_once() -> dict[str, object]:
+        return libgosdt.msplit_fit(
+            z_fit,
+            y_fit,
+            sample_weight,
+            teacher_logit,
+            np.asarray(cache["teacher_boundary_gain"], dtype=np.float64),
+            np.asarray(cache["teacher_boundary_cover"], dtype=np.float64),
+            np.asarray(cache["teacher_boundary_value_jump"], dtype=np.float64),
+            int(depth),
+            int(lookahead_depth),
+            float(reg),
+            int(min_split_size),
+            int(min_child_size),
+            28800.0,
+            int(max_branching),
+            int(exactify_top_k) if exactify_top_k is not None else 0,
+        )
+
+    cpp_result, fit_seconds, timing_guard = guarded_fit(_run_once, repo_root=PROJECT_ROOT)
     print(f"[msplit] fit done in {fit_seconds:.3f}s", flush=True)
     tree = json.loads(str(cpp_result["tree"]))
     pred_train = predict_tree(tree, z_fit)
@@ -263,6 +266,7 @@ def run_cached_msplit(
         "greedy_unique_states": int(cpp_result.get("greedy_unique_states", 0)),
         "greedy_interval_evals": int(cpp_result.get("greedy_interval_evals", 0)),
         "elapsed_time_sec": float(cpp_result.get("elapsed_time_sec", 0.0)),
+        "timing_guard": timing_guard,
         "debr_refine_calls": int(cpp_result.get("debr_refine_calls", 0)),
         "debr_refine_improved": int(cpp_result.get("debr_refine_improved", 0)),
         "debr_total_moves": int(cpp_result.get("debr_total_moves", 0)),
@@ -486,6 +490,7 @@ def run_cached_msplit(
             "heuristic_selector_improving_split_margin_max_by_depth", []
         ),
     }
+    result["tree"] = tree
     comparisons = int(result["family_compare_total"])
     if comparisons > 0:
         result["family2_selected_rate"] = float(result["debr_final_block_wins"]) / float(comparisons)
