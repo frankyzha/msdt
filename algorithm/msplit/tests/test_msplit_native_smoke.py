@@ -192,6 +192,60 @@ def test_native_wrapper_parallel_exactify_repeated_fit_matches_serial():
     assert np.array_equal(serial_second.predict(X), parallel_second.predict(X))
 
 
+def test_native_wrapper_parallel_child_recursion_matches_serial():
+    X = np.array(
+        [
+            [0, 0, 0],
+            [0, 0, 1],
+            [0, 1, 0],
+            [0, 1, 1],
+            [1, 0, 0],
+            [1, 0, 1],
+            [1, 1, 0],
+            [1, 1, 1],
+            [2, 0, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+            [2, 1, 1],
+        ],
+        dtype=np.int32,
+    )
+    y = np.array(
+        [
+            0, 0, 1, 1,  # group 0 prefers feature 1
+            0, 1, 0, 1,  # group 1 prefers feature 2
+            1, 1, 0, 0,  # group 2 prefers inverted feature 1
+        ],
+        dtype=np.int32,
+    )
+    teacher = np.where(y == 1, 4.0, -4.0).astype(np.float64)
+
+    kwargs = dict(
+        full_depth_budget=3,
+        lookahead_depth_budget=2,
+        reg=0.0,
+        min_child_size=1,
+        min_split_size=2,
+        max_branching=3,
+        exactify_top_k=1,
+        use_cpp_solver=True,
+    )
+
+    serial_model = MSPLIT(worker_limit=1, **kwargs).fit(X, y, teacher_logit=teacher)
+    parallel_model = MSPLIT(worker_limit=4, **kwargs).fit(X, y, teacher_logit=teacher)
+
+    def count_internal(node):
+        if getattr(node, "is_leaf", False):
+            return 0
+        return 1 + sum(count_internal(child) for child in getattr(node, "children", []))
+
+    assert serial_model.nominee_exactify_prefix_max_ == 1
+    assert count_internal(serial_model.tree_) >= 3
+    assert abs(serial_model.objective_ - parallel_model.objective_) <= 1e-12
+    assert serial_model.tree == parallel_model.tree
+    assert np.array_equal(serial_model.predict(X), parallel_model.predict(X))
+
+
 def test_native_wrapper_cpp_requires_teacher_guidance():
     X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int32)
     y = np.array([0, 0, 1, 1], dtype=np.int32)

@@ -1417,10 +1417,11 @@
                 tbb::parallel_for(
                     tbb::blocked_range<size_t>(0U, recursive_children.size()),
                     [&](const tbb::blocked_range<size_t> &range) {
+                        Solver &child_solver = acquire_parallel_solver();
                         for (size_t pos = range.begin(); pos != range.end(); ++pos) {
                             const size_t group_idx = recursive_children[pos];
                             child_results[group_idx] = solve_exact_child(
-                                acquire_parallel_solver(),
+                                child_solver,
                                 std::move(eval.child_indices[group_idx]),
                                 eval.child_stats[group_idx]);
                         }
@@ -1533,7 +1534,9 @@
                         consider_exact_result(idx, result);
                     }
                 };
-                if (parallel_runtime_enabled) {
+                // Run the serial outer loop inside a task arena only when we still want
+                // inner child-level recursion to fan out across worker threads.
+                if (parallel_runtime_enabled && exactify_limit == 1U) {
                     tbb::task_arena arena(worker_limit_);
                     arena.execute(run_serial_exactify);
                 } else {
