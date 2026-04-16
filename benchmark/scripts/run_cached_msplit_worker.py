@@ -100,6 +100,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-child-size", type=int, required=True)
     parser.add_argument("--max-branching", type=int, default=3)
     parser.add_argument("--exactify-top-k", type=int, default=DEFAULT_EXACTIFY_TOP_K)
+    parser.add_argument("--worker-limit", type=int, default=1)
     parser.add_argument("--json", type=Path, required=True)
     return parser.parse_args()
 
@@ -133,6 +134,7 @@ def main() -> int:
             28800.0,
             int(args.max_branching),
             int(args.exactify_top_k),
+            int(args.worker_limit),
         )
 
     cpp_result, fit_seconds, timing_guard = guarded_fit(_run_once, repo_root=REPO_ROOT)
@@ -158,6 +160,7 @@ def main() -> int:
         "noncontiguous_group_count": int(span_counts["noncontiguous_groups"]),
         "groups_with_multiple_spans": int(span_counts["groups_with_multiple_spans"]),
         "timing_guard": timing_guard,
+        "worker_limit": int(args.worker_limit),
         "tree": tree,
     }
 

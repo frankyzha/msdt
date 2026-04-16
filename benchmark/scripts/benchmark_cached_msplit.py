@@ -210,8 +210,13 @@ def run_cached_msplit(
     min_split_size: int,
     min_child_size: int,
     max_branching: int,
+    worker_limit: int = 1,
+    include_tree: bool = True,
+    include_diagnostics: bool = True,
+    verbose: bool = False,
 ) -> dict[str, object]:
-    print("[msplit] starting native atomized fit from cached LightGBM bins", flush=True)
+    if verbose:
+        print("[msplit] starting native atomized fit from cached LightGBM bins", flush=True)
     libgosdt = load_local_libgosdt()
     z_fit = np.asarray(cache["Z_fit"], dtype=np.int32)
     z_val = np.asarray(cache["Z_val"], dtype=np.int32) if "Z_val" in cache else None
@@ -239,10 +244,12 @@ def run_cached_msplit(
             28800.0,
             int(max_branching),
             int(exactify_top_k) if exactify_top_k is not None else 0,
+            int(worker_limit),
         )
 
     cpp_result, fit_seconds, timing_guard = guarded_fit(_run_once, repo_root=PROJECT_ROOT)
-    print(f"[msplit] fit done in {fit_seconds:.3f}s", flush=True)
+    if verbose:
+        print(f"[msplit] fit done in {fit_seconds:.3f}s", flush=True)
     tree = json.loads(str(cpp_result["tree"]))
     pred_train = predict_tree(tree, z_fit)
     pred_val = predict_tree(tree, z_val) if z_val is not None else None
@@ -260,22 +267,28 @@ def run_cached_msplit(
         "n_leaves": int(stats["n_leaves"]),
         "n_internal": int(stats["n_internal"]),
         "max_arity": int(stats["max_arity"]),
+        "timing_guard": timing_guard,
+    }
+    if include_tree:
+        result["tree"] = tree
+    if not include_diagnostics:
+        return result
+    result.update({
         "greedy_internal_nodes": int(cpp_result.get("greedy_internal_nodes", 0)),
         "greedy_subproblem_calls": int(cpp_result.get("greedy_subproblem_calls", 0)),
         "greedy_cache_hits": int(cpp_result.get("greedy_cache_hits", 0)),
         "greedy_unique_states": int(cpp_result.get("greedy_unique_states", 0)),
         "greedy_interval_evals": int(cpp_result.get("greedy_interval_evals", 0)),
         "elapsed_time_sec": float(cpp_result.get("elapsed_time_sec", 0.0)),
-        "timing_guard": timing_guard,
-        "debr_refine_calls": int(cpp_result.get("debr_refine_calls", 0)),
-        "debr_refine_improved": int(cpp_result.get("debr_refine_improved", 0)),
-        "debr_total_moves": int(cpp_result.get("debr_total_moves", 0)),
-        "debr_total_hard_gain": float(cpp_result.get("debr_total_hard_gain", 0.0)),
-        "debr_total_soft_gain": float(cpp_result.get("debr_total_soft_gain", 0.0)),
-        "debr_total_delta_j": float(cpp_result.get("debr_total_delta_j", 0.0)),
-        "debr_total_component_delta": int(cpp_result.get("debr_total_component_delta", 0)),
-        "debr_final_geo_wins": int(cpp_result.get("debr_final_geo_wins", 0)),
-        "debr_final_block_wins": int(cpp_result.get("debr_final_block_wins", 0)),
+        "partition_refinement_refine_calls": int(cpp_result.get("partition_refinement_refine_calls", 0)),
+        "partition_refinement_refine_improved": int(cpp_result.get("partition_refinement_refine_improved", 0)),
+        "partition_refinement_total_moves": int(cpp_result.get("partition_refinement_total_moves", 0)),
+        "partition_refinement_total_hard_gain": float(cpp_result.get("partition_refinement_total_hard_gain", 0.0)),
+        "partition_refinement_total_soft_gain": float(cpp_result.get("partition_refinement_total_soft_gain", 0.0)),
+        "partition_refinement_total_delta_j": float(cpp_result.get("partition_refinement_total_delta_j", 0.0)),
+        "partition_refinement_total_component_delta": int(cpp_result.get("partition_refinement_total_component_delta", 0)),
+        "partition_refinement_final_geo_wins": int(cpp_result.get("partition_refinement_final_geo_wins", 0)),
+        "partition_refinement_final_block_wins": int(cpp_result.get("partition_refinement_final_block_wins", 0)),
         "family_compare_total": int(cpp_result.get("family_compare_total", 0)),
         "family_compare_equivalent": int(cpp_result.get("family_compare_equivalent", 0)),
         "family1_both_wins": int(cpp_result.get("family1_both_wins", 0)),
@@ -489,11 +502,10 @@ def run_cached_msplit(
         "heuristic_selector_improving_split_margin_max_by_depth": cpp_result.get(
             "heuristic_selector_improving_split_margin_max_by_depth", []
         ),
-    }
-    result["tree"] = tree
+    })
     comparisons = int(result["family_compare_total"])
     if comparisons > 0:
-        result["family2_selected_rate"] = float(result["debr_final_block_wins"]) / float(comparisons)
+        result["family2_selected_rate"] = float(result["partition_refinement_final_block_wins"]) / float(comparisons)
         result["family2_hard_loss_win_rate"] = float(result["family2_hard_loss_wins"]) / float(comparisons)
         result["family2_hard_impurity_win_rate"] = float(result["family2_hard_impurity_wins"]) / float(comparisons)
         result["family2_both_win_rate"] = float(result["family2_both_wins"]) / float(comparisons)
@@ -624,6 +636,7 @@ def main() -> int:
         help="If set, exactify at most this many shortlisted candidates per node above lookahead depth.",
     )
     parser.add_argument("--lgb-num-threads", type=int, default=DEFAULT_LGB_NUM_THREADS)
+    parser.add_argument("--worker-limit", type=int, default=1)
     parser.add_argument("--cache-path", type=Path, default=None)
     parser.add_argument("--force-rebuild-cache", action="store_true")
     parser.add_argument(
@@ -696,6 +709,8 @@ def main() -> int:
         min_split_size=resolved_min_split_size,
         min_child_size=resolved_min_child_size,
         max_branching=args.max_branching,
+        worker_limit=args.worker_limit,
+        verbose=True,
     )
     result.update(
         {
@@ -715,6 +730,7 @@ def main() -> int:
             "exactify_top_k": (
                 int(args.exactify_top_k) if args.exactify_top_k is not None else None
             ),
+            "worker_limit": int(args.worker_limit),
         }
     )
     print(json.dumps(result, indent=2))

@@ -778,6 +778,9 @@
         if (lhs.assignment.size() != rhs.assignment.size()) {
             return false;
         }
+        if (lhs.assignment == rhs.assignment) {
+            return true;
+        }
         std::vector<int> lhs_to_rhs;
         std::vector<int> rhs_to_lhs;
         int lhs_groups = 0;
@@ -890,7 +893,7 @@
         if (!impurity.feasible) {
             ++telemetry.atomized_coarse_pruned_candidates;
             if (diagnostics) {
-                ++telemetry.debr_final_block_wins;
+                ++telemetry.partition_refinement_final_block_wins;
             }
             selected.push_back(std::move(misclassification));
             return selected;
@@ -898,7 +901,7 @@
         if (!misclassification.feasible) {
             ++telemetry.atomized_coarse_pruned_candidates;
             if (diagnostics) {
-                ++telemetry.debr_final_geo_wins;
+                ++telemetry.partition_refinement_final_geo_wins;
             }
             selected.push_back(std::move(impurity));
             return selected;
@@ -909,7 +912,7 @@
             if (diagnostics) {
                 ++telemetry.family_compare_equivalent;
                 ++telemetry.family1_selected_by_equivalence;
-                ++telemetry.debr_final_geo_wins;
+                ++telemetry.partition_refinement_final_geo_wins;
             }
             ++telemetry.atomized_coarse_pruned_candidates;
             selected.push_back(std::move(impurity));
@@ -1589,6 +1592,28 @@
         return true;
     }
 
+    static bool canonicalize_group_assignment(
+        std::vector<int> &assign,
+        int groups
+    ) {
+        if (groups < 0) {
+            return false;
+        }
+        std::vector<int> remap((size_t)groups, -1);
+        int next_group = 0;
+        for (int &group_idx : assign) {
+            if (group_idx < 0 || group_idx >= groups) {
+                return false;
+            }
+            int &canonical_group = remap[(size_t)group_idx];
+            if (canonical_group < 0) {
+                canonical_group = next_group++;
+            }
+            group_idx = canonical_group;
+        }
+        return true;
+    }
+
     AtomizedCandidate candidate_from_assignment(
         int feature,
         const std::vector<AtomizedAtom> &atoms,
@@ -1602,13 +1627,17 @@
         if (groups < 2) {
             return out;
         }
+        std::vector<int> canonical_assign = assign;
+        if (!canonicalize_group_assignment(canonical_assign, groups)) {
+            return out;
+        }
         if (binary_mode_) {
-            const int atom_count = (int)assign.size();
+            const int atom_count = (int)canonical_assign.size();
             std::vector<int> counts((size_t)groups, 0);
             const bool has_adjacency_bonus =
                 adjacency_bonus != nullptr && !adjacency_bonus->empty();
             for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
-                const int group_idx = assign[(size_t)atom_pos];
+                const int group_idx = canonical_assign[(size_t)atom_pos];
                 if (group_idx < 0 || group_idx >= groups) {
                     return AtomizedCandidate{};
                 }
@@ -1632,7 +1661,7 @@
             out.score = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
 
             for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
-                const int group_idx = assign[(size_t)atom_pos];
+                const int group_idx = canonical_assign[(size_t)atom_pos];
                 const int last_pos = group_last_pos[(size_t)group_idx];
                 if (last_pos >= 0) {
                     if (atom_pos != last_pos + 1) {
@@ -1681,7 +1710,7 @@
                 out.score.boundary_penalty += kept_adjacency_bonus - adjacency_bonus_total;
             } else if (feature >= 0) {
                 for (int atom_pos = 1; atom_pos < atom_count; ++atom_pos) {
-                    if (assign[(size_t)(atom_pos - 1)] != assign[(size_t)atom_pos]) {
+                    if (canonical_assign[(size_t)(atom_pos - 1)] != canonical_assign[(size_t)atom_pos]) {
                         out.score.boundary_penalty -= contiguous_boundary_bonus(
                             feature,
                             atoms[(size_t)(atom_pos - 1)],
@@ -1694,19 +1723,19 @@
             out.feature = feature;
             out.groups = groups;
             out.hard_loss_mode = (objective_mode == AtomizedObjectiveMode::kHardLoss);
-            out.assignment = assign;
+            out.assignment = std::move(canonical_assign);
             return out;
         }
         std::vector<std::vector<int>> group_atom_positions;
         std::vector<int> group_counts;
-        if (!fill_groups_from_assignment(assign, groups, group_atom_positions, group_counts)) {
+        if (!fill_groups_from_assignment(canonical_assign, groups, group_atom_positions, group_counts)) {
             return AtomizedCandidate{};
         }
         out.score = score_group_assignment(
             feature,
             atoms,
             group_atom_positions,
-            &assign,
+            &canonical_assign,
             adjacency_bonus,
             adjacency_bonus_total);
         if (!std::isfinite(out.score.hard_impurity)) {
@@ -1716,7 +1745,7 @@
         out.feature = feature;
         out.groups = groups;
         out.hard_loss_mode = (objective_mode == AtomizedObjectiveMode::kHardLoss);
-        out.assignment = assign;
+        out.assignment = std::move(canonical_assign);
         return out;
     }
 

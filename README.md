@@ -80,7 +80,6 @@ python3 -m pytest algorithm/msplit/tests
 - The maintained benchmark entrypoints under `benchmark/scripts/` are
   `benchmark_cached_msplit.py`,
   `benchmark_cached_fixed_config_msplit_vs_shapecart.py`,
-  `benchmark_cached_optuna_msplit_vs_shapecart.py`, and
-  `benchmark_cached_gridcv_msplit_vs_shapecart.py`.
+  and `benchmark_cached_optuna_msplit_vs_shapecart.py`.
 - Generated benchmark artifacts are intentionally ignored so the repository
   stays focused on code, datasets, and reproducible entrypoints.

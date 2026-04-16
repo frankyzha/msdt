@@ -539,7 +539,7 @@ def main() -> int:
                         "atomized_coarse_candidates": payload.get("atomized_coarse_candidates"),
                         "atomized_coarse_pruned_candidates": payload.get("atomized_coarse_pruned_candidates"),
                         "atomized_final_candidates": payload.get("atomized_final_candidates"),
-                        "debr_refine_calls": payload.get("debr_refine_calls"),
+                        "partition_refinement_refine_calls": payload.get("partition_refinement_refine_calls"),
                         "family_compare_total": payload.get("family_compare_total"),
                         "family_sent_both": payload.get("family_sent_both"),
                         "heuristic_selector_candidate_total": payload.get("heuristic_selector_candidate_total"),

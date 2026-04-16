@@ -12,10 +12,14 @@ def _current_solver_source_text() -> dict[str, str]:
     core_source = root / "msplit_core.cpp"
     selector_source = root / "msplit_nonlinear.cpp"
     support_source = root / "msplit_atomized_support.cpp"
+    atomized_source = root / "msplit_atomized.cpp"
+    heuristic_source = root / "msplit_atomized_heuristic.cpp"
     return {
         "core": core_source.read_text(encoding="utf-8"),
         "selector": selector_source.read_text(encoding="utf-8"),
         "support": support_source.read_text(encoding="utf-8"),
+        "atomized": atomized_source.read_text(encoding="utf-8"),
+        "heuristic": heuristic_source.read_text(encoding="utf-8"),
     }
 
 
@@ -122,3 +126,21 @@ def test_signature_summary_groups_rows_without_string_row_copies():
     assert "std::unordered_map<const int *, CanonicalSignatureBlock" in core
     assert "row_pattern_less(lhs.row_key, rhs.row_key)" in core
     assert "encode_signature_code(" not in core
+
+
+def test_nonlinear_support_canonicalizes_group_assignments():
+    support = _current_solver_source_text()["support"]
+
+    assert "static bool canonicalize_group_assignment(" in support
+    assert "std::vector<int> canonical_assign = assign;" in support
+    assert "if (!canonicalize_group_assignment(canonical_assign, groups))" in support
+    assert "out.assignment = std::move(canonical_assign);" in support
+    assert "if (lhs.assignment == rhs.assignment)" in support
+
+
+def test_nonlinear_selector_caches_duplicate_exact_child_evaluations():
+    heuristic = _current_solver_source_text()["heuristic"]
+
+    assert "struct CachedExactChildren" in heuristic
+    assert "exact_child_eval_cache" in heuristic
+    assert "nominee_child_partition_key" in heuristic

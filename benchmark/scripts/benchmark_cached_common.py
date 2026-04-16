@@ -323,12 +323,15 @@ def write_msplit_artifacts(
     depth: int,
     best_params: dict[str, Any],
     final_result: dict[str, Any],
+    partition_label: str | None = None,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
+    label = str(partition_label).strip() if partition_label is not None else f"seed{int(protocol.seed)}"
     model_dir = (
         out_dir
         / "best_models"
         / protocol.dataset
-        / f"seed{int(protocol.seed)}"
+        / label
         / f"depth{int(depth)}"
         / "msplit"
     )
@@ -373,6 +376,7 @@ def write_msplit_artifacts(
             "cache_used_compatible_fallback": bool(protocol.cache_used_fallback),
             "selected_params": json_safe(best_params),
             "result": json_safe({k: v for k, v in final_result.items() if k != "tree"}),
+            **(json_safe(metadata_extra) if metadata_extra is not None else {}),
         },
     )
     return relative_path(tree_artifact_path, out_dir), relative_path(metrics_path, out_dir)
@@ -385,12 +389,15 @@ def write_shapecart_artifacts(
     depth: int,
     final_params: dict[str, Any],
     final_result: dict[str, Any],
+    partition_label: str | None = None,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
+    label = str(partition_label).strip() if partition_label is not None else f"seed{int(protocol.seed)}"
     model_dir = (
         out_dir
         / "best_models"
         / protocol.dataset
-        / f"seed{int(protocol.seed)}"
+        / label
         / f"depth{int(depth)}"
         / "shapecart"
     )
@@ -431,6 +438,7 @@ def write_shapecart_artifacts(
             "cache_used_compatible_fallback": bool(protocol.cache_used_fallback),
             "selected_params": json_safe(final_params),
             "result": json_safe({k: v for k, v in final_result.items() if k != "model"}),
+            **(json_safe(metadata_extra) if metadata_extra is not None else {}),
         },
     )
     return relative_path(tree_artifact_path, out_dir), relative_path(metrics_path, out_dir)
@@ -467,10 +475,11 @@ def aggregate_results(rows: list[dict[str, Any]]) -> pd.DataFrame:
         else:
             flat_cols.append(str(col))
     summary.columns = flat_cols
+    count_col = "n_folds" if "fold_index" in df.columns else "n_seeds"
     counts = (
         df.groupby(["dataset", "algorithm", "depth_budget"], as_index=False)
         .size()
-        .rename(columns={"size": "n_seeds"})
+        .rename(columns={"size": count_col})
     )
     return summary.merge(counts, on=["dataset", "algorithm", "depth_budget"], how="left")
 

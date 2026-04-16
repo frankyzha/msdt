@@ -1,6 +1,8 @@
 #include "msplit.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
@@ -9,14 +11,20 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <queue>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_for.h>
+#include <tbb/task_arena.h>
 
 namespace msplit {
 
@@ -25,6 +33,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr double kInfinity = std::numeric_limits<double>::infinity();
 constexpr double kEpsUpdate = 1e-12;
+std::atomic<std::uint64_t> g_solver_instance_counter{1};
 
 static bool env_flag_enabled(const char *name) {
     const char *raw = std::getenv(name);
@@ -32,6 +41,18 @@ static bool env_flag_enabled(const char *name) {
         return false;
     }
     return !(raw[0] == '0' && raw[1] == '\0');
+}
+
+template <typename T>
+static void update_atomic_max(std::atomic<T> &target, T candidate) {
+    T observed = target.load(std::memory_order_relaxed);
+    while (candidate > observed &&
+           !target.compare_exchange_weak(
+               observed,
+               candidate,
+               std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
 }
 
 struct ScopedTimer {
@@ -255,40 +276,61 @@ class Solver {
         size_t block_count = 0U;
     };
 
+    struct SharedCanonicalSignatureCacheShard {
+        std::mutex mutex;
+        std::unordered_map<std::string, CanonicalSignatureSummary> entries;
+    };
+
+    struct SharedGreedyCacheShard {
+        std::mutex mutex;
+        std::unordered_map<std::string, GreedyCacheEntry> entries;
+    };
+
+    struct SharedCacheBundle {
+        static constexpr size_t kShardCount = 64U;
+        std::array<SharedCanonicalSignatureCacheShard, kShardCount> canonical_signature_shards;
+        std::array<SharedGreedyCacheShard, kShardCount> greedy_shards;
+        std::atomic<long long> greedy_unique_states{0};
+        std::atomic<long long> greedy_entries_peak{0};
+        std::atomic<long long> greedy_bytes_peak{0};
+        std::atomic<size_t> greedy_entries_current{0};
+        std::atomic<size_t> greedy_bytes_current{0};
+    };
+
     struct AtomizedTelemetry {
-        long long &debr_refine_calls;
-        long long &debr_refine_improved;
-        long long &debr_total_moves;
-        long long &debr_bridge_policy_calls;
-        long long &debr_refine_windowed_calls;
-        long long &debr_refine_unwindowed_calls;
-        long long &debr_refine_overlap_segments;
-        long long &debr_refine_calls_with_overlap;
-        long long &debr_refine_calls_without_overlap;
-        long long &debr_candidate_total;
-        long long &debr_candidate_legal;
-        long long &debr_candidate_source_size_rejects;
-        long long &debr_candidate_target_size_rejects;
-        long long &debr_candidate_descent_eligible;
-        long long &debr_candidate_descent_rejected;
-        long long &debr_candidate_bridge_eligible;
-        long long &debr_candidate_bridge_window_blocked;
-        long long &debr_candidate_bridge_used_blocked;
-        long long &debr_candidate_bridge_guide_rejected;
-        long long &debr_candidate_cleanup_eligible;
-        long long &debr_candidate_cleanup_primary_rejected;
-        long long &debr_candidate_cleanup_complexity_rejected;
-        long long &debr_candidate_score_rejected;
-        long long &debr_descent_moves;
-        long long &debr_bridge_moves;
-        long long &debr_simplify_moves;
-        std::vector<long long> &debr_source_group_row_size_histogram;
-        std::vector<long long> &debr_source_component_atom_size_histogram;
-        std::vector<long long> &debr_source_component_row_size_histogram;
-        double &debr_total_hard_gain;
-        double &debr_total_soft_gain;
-        double &debr_total_delta_j;
-        long long &debr_total_component_delta;
+        long long &partition_refinement_refine_calls;
+        long long &partition_refinement_refine_improved;
+        long long &partition_refinement_total_moves;
+        long long &partition_refinement_bridge_policy_calls;
+        long long &partition_refinement_refine_windowed_calls;
+        long long &partition_refinement_refine_unwindowed_calls;
+        long long &partition_refinement_refine_overlap_segments;
+        long long &partition_refinement_refine_calls_with_overlap;
+        long long &partition_refinement_refine_calls_without_overlap;
+        long long &partition_refinement_candidate_total;
+        long long &partition_refinement_candidate_legal;
+        long long &partition_refinement_candidate_source_size_rejects;
+        long long &partition_refinement_candidate_target_size_rejects;
+        long long &partition_refinement_candidate_descent_eligible;
+        long long &partition_refinement_candidate_descent_rejected;
+        long long &partition_refinement_candidate_bridge_eligible;
+        long long &partition_refinement_candidate_bridge_window_blocked;
+        long long &partition_refinement_candidate_bridge_used_blocked;
+        long long &partition_refinement_candidate_bridge_guide_rejected;
+        long long &partition_refinement_candidate_cleanup_eligible;
+        long long &partition_refinement_candidate_cleanup_primary_rejected;
+        long long &partition_refinement_candidate_cleanup_complexity_rejected;
+        long long &partition_refinement_candidate_score_rejected;
+        long long &partition_refinement_descent_moves;
+        long long &partition_refinement_bridge_moves;
+        long long &partition_refinement_simplify_moves;
+        std::vector<long long> &partition_refinement_source_group_row_size_histogram;
+        std::vector<long long> &partition_refinement_source_component_atom_size_histogram;
+        std::vector<long long> &partition_refinement_source_component_row_size_histogram;
+        double &partition_refinement_total_hard_gain;
+        double &partition_refinement_total_soft_gain;
+        double &partition_refinement_total_delta_j;
+        long long &partition_refinement_total_component_delta;
         long long &greedy_interval_evals;
         long long &atomized_features_prepared;
         long long &atomized_coarse_candidates;
@@ -303,8 +345,8 @@ class Solver {
         std::vector<long long> &atomized_feature_atom_count_histogram;
         std::vector<long long> &atomized_feature_block_atom_count_histogram;
         std::vector<long long> &atomized_feature_q_effective_histogram;
-        long long &debr_final_geo_wins;
-        long long &debr_final_block_wins;
+        long long &partition_refinement_final_geo_wins;
+        long long &partition_refinement_final_block_wins;
         long long &family_compare_total;
         long long &family_compare_equivalent;
         long long &family1_both_wins;
@@ -395,9 +437,11 @@ class Solver {
         int min_child_size,
         double time_limit_seconds,
         int max_branching,
-        int exactify_top_k
+        int exactify_top_k,
+        int worker_limit
     )
-        : x_flat_(x_flat),
+        : solver_instance_id_(g_solver_instance_counter.fetch_add(1U, std::memory_order_relaxed)),
+          x_flat_(x_flat),
           n_rows_(n_rows),
           n_features_(n_features),
           y_(y),
@@ -416,40 +460,41 @@ class Solver {
           time_limit_seconds_(time_limit_seconds),
           max_branching_(max_branching),
           exactify_top_k_(exactify_top_k),
+          worker_limit_(worker_limit),
           atomized_telemetry_(
-              debr_refine_calls_,
-              debr_refine_improved_,
-              debr_total_moves_,
-              debr_bridge_policy_calls_,
-              debr_refine_windowed_calls_,
-              debr_refine_unwindowed_calls_,
-              debr_refine_overlap_segments_,
-              debr_refine_calls_with_overlap_,
-              debr_refine_calls_without_overlap_,
-              debr_candidate_total_,
-              debr_candidate_legal_,
-              debr_candidate_source_size_rejects_,
-              debr_candidate_target_size_rejects_,
-              debr_candidate_descent_eligible_,
-              debr_candidate_descent_rejected_,
-              debr_candidate_bridge_eligible_,
-              debr_candidate_bridge_window_blocked_,
-              debr_candidate_bridge_used_blocked_,
-              debr_candidate_bridge_guide_rejected_,
-              debr_candidate_cleanup_eligible_,
-              debr_candidate_cleanup_primary_rejected_,
-              debr_candidate_cleanup_complexity_rejected_,
-              debr_candidate_score_rejected_,
-              debr_descent_moves_,
-              debr_bridge_moves_,
-              debr_simplify_moves_,
-              debr_source_group_row_size_histogram_,
-              debr_source_component_atom_size_histogram_,
-              debr_source_component_row_size_histogram_,
-              debr_total_hard_gain_,
-              debr_total_soft_gain_,
-              debr_total_delta_j_,
-              debr_total_component_delta_,
+              partition_refinement_refine_calls_,
+              partition_refinement_refine_improved_,
+              partition_refinement_total_moves_,
+              partition_refinement_bridge_policy_calls_,
+              partition_refinement_refine_windowed_calls_,
+              partition_refinement_refine_unwindowed_calls_,
+              partition_refinement_refine_overlap_segments_,
+              partition_refinement_refine_calls_with_overlap_,
+              partition_refinement_refine_calls_without_overlap_,
+              partition_refinement_candidate_total_,
+              partition_refinement_candidate_legal_,
+              partition_refinement_candidate_source_size_rejects_,
+              partition_refinement_candidate_target_size_rejects_,
+              partition_refinement_candidate_descent_eligible_,
+              partition_refinement_candidate_descent_rejected_,
+              partition_refinement_candidate_bridge_eligible_,
+              partition_refinement_candidate_bridge_window_blocked_,
+              partition_refinement_candidate_bridge_used_blocked_,
+              partition_refinement_candidate_bridge_guide_rejected_,
+              partition_refinement_candidate_cleanup_eligible_,
+              partition_refinement_candidate_cleanup_primary_rejected_,
+              partition_refinement_candidate_cleanup_complexity_rejected_,
+              partition_refinement_candidate_score_rejected_,
+              partition_refinement_descent_moves_,
+              partition_refinement_bridge_moves_,
+              partition_refinement_simplify_moves_,
+              partition_refinement_source_group_row_size_histogram_,
+              partition_refinement_source_component_atom_size_histogram_,
+              partition_refinement_source_component_row_size_histogram_,
+              partition_refinement_total_hard_gain_,
+              partition_refinement_total_soft_gain_,
+              partition_refinement_total_delta_j_,
+              partition_refinement_total_component_delta_,
               greedy_interval_evals_,
               atomized_features_prepared_,
               atomized_coarse_candidates_,
@@ -464,8 +509,8 @@ class Solver {
               atomized_feature_atom_count_histogram_,
               atomized_feature_block_atom_count_histogram_,
               atomized_feature_q_effective_histogram_,
-              debr_final_geo_wins_,
-              debr_final_block_wins_,
+              partition_refinement_final_geo_wins_,
+              partition_refinement_final_block_wins_,
               family_compare_total_,
               family_compare_equivalent_,
               family1_both_wins_,
@@ -578,6 +623,16 @@ class Solver {
         if (max_branching_ < 0) {
             throw std::invalid_argument("MSPLIT max_branching must be >= 0.");
         }
+        if (worker_limit_ < 0) {
+            throw std::invalid_argument("MSPLIT worker_limit must be >= 0.");
+        }
+        if (worker_limit_ == 0) {
+            const unsigned int hardware = std::thread::hardware_concurrency();
+            worker_limit_ = static_cast<int>(hardware == 0U ? 1U : hardware);
+        }
+        if (worker_limit_ > 1) {
+            shared_cache_bundle_ = std::make_shared<SharedCacheBundle>();
+        }
         if (!sample_weight_raw_.empty() && (int)sample_weight_raw_.size() != n_rows_) {
             throw std::invalid_argument("MSPLIT sample_weight must have length n_rows when provided.");
         }
@@ -629,6 +684,7 @@ class Solver {
         std::iota(root_indices.begin(), root_indices.end(), 0);
 
         GreedyResult solved = solve_subproblem(std::move(root_indices), full_depth_budget_);
+        absorb_registered_parallel_worker_metrics();
         FitResult out;
         out.tree = to_json(solved.tree);
         out.objective = solved.objective;
@@ -690,41 +746,41 @@ class Solver {
             heuristic_selector_improving_split_margin_max_by_depth_;
         out.profiling_refine_calls = profiling_refine_calls_;
         out.profiling_refine_sec = profiling_refine_sec_;
-        out.debr_refine_calls = debr_refine_calls_;
-        out.debr_refine_improved = debr_refine_improved_;
-        out.debr_total_moves = debr_total_moves_;
-        out.debr_bridge_policy_calls = debr_bridge_policy_calls_;
-        out.debr_refine_windowed_calls = debr_refine_windowed_calls_;
-        out.debr_refine_unwindowed_calls = debr_refine_unwindowed_calls_;
-        out.debr_refine_overlap_segments = debr_refine_overlap_segments_;
-        out.debr_refine_calls_with_overlap = debr_refine_calls_with_overlap_;
-        out.debr_refine_calls_without_overlap = debr_refine_calls_without_overlap_;
-        out.debr_candidate_total = debr_candidate_total_;
-        out.debr_candidate_legal = debr_candidate_legal_;
-        out.debr_candidate_source_size_rejects = debr_candidate_source_size_rejects_;
-        out.debr_candidate_target_size_rejects = debr_candidate_target_size_rejects_;
-        out.debr_candidate_descent_eligible = debr_candidate_descent_eligible_;
-        out.debr_candidate_descent_rejected = debr_candidate_descent_rejected_;
-        out.debr_candidate_bridge_eligible = debr_candidate_bridge_eligible_;
-        out.debr_candidate_bridge_window_blocked = debr_candidate_bridge_window_blocked_;
-        out.debr_candidate_bridge_used_blocked = debr_candidate_bridge_used_blocked_;
-        out.debr_candidate_bridge_guide_rejected = debr_candidate_bridge_guide_rejected_;
-        out.debr_candidate_cleanup_eligible = debr_candidate_cleanup_eligible_;
-        out.debr_candidate_cleanup_primary_rejected = debr_candidate_cleanup_primary_rejected_;
-        out.debr_candidate_cleanup_complexity_rejected = debr_candidate_cleanup_complexity_rejected_;
-        out.debr_candidate_score_rejected = debr_candidate_score_rejected_;
-        out.debr_descent_moves = debr_descent_moves_;
-        out.debr_bridge_moves = debr_bridge_moves_;
-        out.debr_simplify_moves = debr_simplify_moves_;
-        out.debr_source_group_row_size_histogram = debr_source_group_row_size_histogram_;
-        out.debr_source_component_atom_size_histogram = debr_source_component_atom_size_histogram_;
-        out.debr_source_component_row_size_histogram = debr_source_component_row_size_histogram_;
-        out.debr_total_hard_gain = debr_total_hard_gain_;
-        out.debr_total_soft_gain = debr_total_soft_gain_;
-        out.debr_total_delta_j = debr_total_delta_j_;
-        out.debr_total_component_delta = debr_total_component_delta_;
-        out.debr_final_geo_wins = debr_final_geo_wins_;
-        out.debr_final_block_wins = debr_final_block_wins_;
+        out.partition_refinement_refine_calls = partition_refinement_refine_calls_;
+        out.partition_refinement_refine_improved = partition_refinement_refine_improved_;
+        out.partition_refinement_total_moves = partition_refinement_total_moves_;
+        out.partition_refinement_bridge_policy_calls = partition_refinement_bridge_policy_calls_;
+        out.partition_refinement_refine_windowed_calls = partition_refinement_refine_windowed_calls_;
+        out.partition_refinement_refine_unwindowed_calls = partition_refinement_refine_unwindowed_calls_;
+        out.partition_refinement_refine_overlap_segments = partition_refinement_refine_overlap_segments_;
+        out.partition_refinement_refine_calls_with_overlap = partition_refinement_refine_calls_with_overlap_;
+        out.partition_refinement_refine_calls_without_overlap = partition_refinement_refine_calls_without_overlap_;
+        out.partition_refinement_candidate_total = partition_refinement_candidate_total_;
+        out.partition_refinement_candidate_legal = partition_refinement_candidate_legal_;
+        out.partition_refinement_candidate_source_size_rejects = partition_refinement_candidate_source_size_rejects_;
+        out.partition_refinement_candidate_target_size_rejects = partition_refinement_candidate_target_size_rejects_;
+        out.partition_refinement_candidate_descent_eligible = partition_refinement_candidate_descent_eligible_;
+        out.partition_refinement_candidate_descent_rejected = partition_refinement_candidate_descent_rejected_;
+        out.partition_refinement_candidate_bridge_eligible = partition_refinement_candidate_bridge_eligible_;
+        out.partition_refinement_candidate_bridge_window_blocked = partition_refinement_candidate_bridge_window_blocked_;
+        out.partition_refinement_candidate_bridge_used_blocked = partition_refinement_candidate_bridge_used_blocked_;
+        out.partition_refinement_candidate_bridge_guide_rejected = partition_refinement_candidate_bridge_guide_rejected_;
+        out.partition_refinement_candidate_cleanup_eligible = partition_refinement_candidate_cleanup_eligible_;
+        out.partition_refinement_candidate_cleanup_primary_rejected = partition_refinement_candidate_cleanup_primary_rejected_;
+        out.partition_refinement_candidate_cleanup_complexity_rejected = partition_refinement_candidate_cleanup_complexity_rejected_;
+        out.partition_refinement_candidate_score_rejected = partition_refinement_candidate_score_rejected_;
+        out.partition_refinement_descent_moves = partition_refinement_descent_moves_;
+        out.partition_refinement_bridge_moves = partition_refinement_bridge_moves_;
+        out.partition_refinement_simplify_moves = partition_refinement_simplify_moves_;
+        out.partition_refinement_source_group_row_size_histogram = partition_refinement_source_group_row_size_histogram_;
+        out.partition_refinement_source_component_atom_size_histogram = partition_refinement_source_component_atom_size_histogram_;
+        out.partition_refinement_source_component_row_size_histogram = partition_refinement_source_component_row_size_histogram_;
+        out.partition_refinement_total_hard_gain = partition_refinement_total_hard_gain_;
+        out.partition_refinement_total_soft_gain = partition_refinement_total_soft_gain_;
+        out.partition_refinement_total_delta_j = partition_refinement_total_delta_j_;
+        out.partition_refinement_total_component_delta = partition_refinement_total_component_delta_;
+        out.partition_refinement_final_geo_wins = partition_refinement_final_geo_wins_;
+        out.partition_refinement_final_block_wins = partition_refinement_final_block_wins_;
         out.family_compare_total = family_compare_total_;
         out.family_compare_equivalent = family_compare_equivalent_;
         out.family1_both_wins = family1_both_wins_;
@@ -822,6 +878,11 @@ class Solver {
     }
 
    private:
+    std::uint64_t solver_instance_id_ = 0;
+    std::shared_ptr<SharedCacheBundle> shared_cache_bundle_;
+    std::mutex parallel_worker_clones_mutex_;
+    std::vector<const Solver *> parallel_worker_clones_;
+    bool parallel_worker_metrics_absorbed_ = false;
     std::span<const int> x_flat_;
     int n_rows_;
     int n_features_;
@@ -854,6 +915,7 @@ class Solver {
     double time_limit_seconds_;
     int max_branching_;
     int exactify_top_k_ = 0;
+    int worker_limit_ = 1;
     long long greedy_internal_nodes_ = 0;
     mutable long long greedy_subproblem_calls_ = 0;
     mutable long long exact_dp_subproblem_calls_above_lookahead_ = 0;
@@ -910,41 +972,41 @@ class Solver {
         env_flag_enabled("MSPLIT_ENABLE_DETAILED_TELEMETRY");
     const bool diagnostics_enabled_ =
         detailed_selector_telemetry_enabled_ || env_flag_enabled("MSPLIT_ENABLE_DIAGNOSTICS");
-    long long debr_refine_calls_ = 0;
-    long long debr_refine_improved_ = 0;
-    long long debr_total_moves_ = 0;
-    long long debr_bridge_policy_calls_ = 0;
-    long long debr_refine_windowed_calls_ = 0;
-    long long debr_refine_unwindowed_calls_ = 0;
-    long long debr_refine_overlap_segments_ = 0;
-    long long debr_refine_calls_with_overlap_ = 0;
-    long long debr_refine_calls_without_overlap_ = 0;
-    long long debr_candidate_total_ = 0;
-    long long debr_candidate_legal_ = 0;
-    long long debr_candidate_source_size_rejects_ = 0;
-    long long debr_candidate_target_size_rejects_ = 0;
-    long long debr_candidate_descent_eligible_ = 0;
-    long long debr_candidate_descent_rejected_ = 0;
-    long long debr_candidate_bridge_eligible_ = 0;
-    long long debr_candidate_bridge_window_blocked_ = 0;
-    long long debr_candidate_bridge_used_blocked_ = 0;
-    long long debr_candidate_bridge_guide_rejected_ = 0;
-    long long debr_candidate_cleanup_eligible_ = 0;
-    long long debr_candidate_cleanup_primary_rejected_ = 0;
-    long long debr_candidate_cleanup_complexity_rejected_ = 0;
-    long long debr_candidate_score_rejected_ = 0;
-    long long debr_descent_moves_ = 0;
-    long long debr_bridge_moves_ = 0;
-    long long debr_simplify_moves_ = 0;
-    std::vector<long long> debr_source_group_row_size_histogram_;
-    std::vector<long long> debr_source_component_atom_size_histogram_;
-    std::vector<long long> debr_source_component_row_size_histogram_;
-    double debr_total_hard_gain_ = 0.0;
-    double debr_total_soft_gain_ = 0.0;
-    double debr_total_delta_j_ = 0.0;
-    long long debr_total_component_delta_ = 0;
-    long long debr_final_geo_wins_ = 0;
-    long long debr_final_block_wins_ = 0;
+    long long partition_refinement_refine_calls_ = 0;
+    long long partition_refinement_refine_improved_ = 0;
+    long long partition_refinement_total_moves_ = 0;
+    long long partition_refinement_bridge_policy_calls_ = 0;
+    long long partition_refinement_refine_windowed_calls_ = 0;
+    long long partition_refinement_refine_unwindowed_calls_ = 0;
+    long long partition_refinement_refine_overlap_segments_ = 0;
+    long long partition_refinement_refine_calls_with_overlap_ = 0;
+    long long partition_refinement_refine_calls_without_overlap_ = 0;
+    long long partition_refinement_candidate_total_ = 0;
+    long long partition_refinement_candidate_legal_ = 0;
+    long long partition_refinement_candidate_source_size_rejects_ = 0;
+    long long partition_refinement_candidate_target_size_rejects_ = 0;
+    long long partition_refinement_candidate_descent_eligible_ = 0;
+    long long partition_refinement_candidate_descent_rejected_ = 0;
+    long long partition_refinement_candidate_bridge_eligible_ = 0;
+    long long partition_refinement_candidate_bridge_window_blocked_ = 0;
+    long long partition_refinement_candidate_bridge_used_blocked_ = 0;
+    long long partition_refinement_candidate_bridge_guide_rejected_ = 0;
+    long long partition_refinement_candidate_cleanup_eligible_ = 0;
+    long long partition_refinement_candidate_cleanup_primary_rejected_ = 0;
+    long long partition_refinement_candidate_cleanup_complexity_rejected_ = 0;
+    long long partition_refinement_candidate_score_rejected_ = 0;
+    long long partition_refinement_descent_moves_ = 0;
+    long long partition_refinement_bridge_moves_ = 0;
+    long long partition_refinement_simplify_moves_ = 0;
+    std::vector<long long> partition_refinement_source_group_row_size_histogram_;
+    std::vector<long long> partition_refinement_source_component_atom_size_histogram_;
+    std::vector<long long> partition_refinement_source_component_row_size_histogram_;
+    double partition_refinement_total_hard_gain_ = 0.0;
+    double partition_refinement_total_soft_gain_ = 0.0;
+    double partition_refinement_total_delta_j_ = 0.0;
+    long long partition_refinement_total_component_delta_ = 0;
+    long long partition_refinement_final_geo_wins_ = 0;
+    long long partition_refinement_final_block_wins_ = 0;
     long long family_compare_total_ = 0;
     long long family_compare_equivalent_ = 0;
     long long family1_both_wins_ = 0;
@@ -1076,8 +1138,79 @@ class Solver {
         return sizeof(GreedyCacheEntry) + key.capacity() + sizeof(result);
     }
 
+    size_t shared_cache_shard_index(const std::string &key) const {
+        return std::hash<std::string>{}(key) % SharedCacheBundle::kShardCount;
+    }
+
+    bool greedy_cache_lookup(const std::string &key, GreedyResult &result) const {
+        if (key.empty()) {
+            return false;
+        }
+        if (shared_cache_bundle_) {
+            SharedGreedyCacheShard &shard =
+                shared_cache_bundle_->greedy_shards[shared_cache_shard_index(key)];
+            std::scoped_lock<std::mutex> guard(shard.mutex);
+            auto it = shard.entries.find(key);
+            if (it == shard.entries.end()) {
+                return false;
+            }
+            ++greedy_cache_hits_;
+            result = it->second.result;
+            return true;
+        }
+        auto it = greedy_cache_.find(key);
+        if (it == greedy_cache_.end()) {
+            return false;
+        }
+        ++greedy_cache_hits_;
+        result = it->second.result;
+        return true;
+    }
+
     void cache_store(const std::string &key, const GreedyResult &result, int depth_remaining) const {
         if (key.empty() || depth_remaining > greedy_cache_max_depth_) {
+            return;
+        }
+        if (shared_cache_bundle_) {
+            const size_t bytes = estimate_cache_entry_bytes(key, result);
+            SharedGreedyCacheShard &shard =
+                shared_cache_bundle_->greedy_shards[shared_cache_shard_index(key)];
+            std::scoped_lock<std::mutex> guard(shard.mutex);
+            auto [it, inserted] = shard.entries.emplace(key, GreedyCacheEntry{result, bytes});
+            if (!inserted) {
+                const size_t old_bytes = it->second.bytes;
+                it->second.result = result;
+                it->second.bytes = bytes;
+                if (bytes >= old_bytes) {
+                    shared_cache_bundle_->greedy_bytes_current.fetch_add(
+                        bytes - old_bytes,
+                        std::memory_order_relaxed);
+                } else {
+                    shared_cache_bundle_->greedy_bytes_current.fetch_sub(
+                        old_bytes - bytes,
+                        std::memory_order_relaxed);
+                }
+                update_atomic_max(
+                    shared_cache_bundle_->greedy_bytes_peak,
+                    static_cast<long long>(
+                        shared_cache_bundle_->greedy_bytes_current.load(std::memory_order_relaxed)));
+                return;
+            }
+            const size_t entries_current = shared_cache_bundle_->greedy_entries_current.fetch_add(
+                                              1U,
+                                              std::memory_order_relaxed) +
+                1U;
+            const size_t bytes_current = shared_cache_bundle_->greedy_bytes_current.fetch_add(
+                                             bytes,
+                                             std::memory_order_relaxed) +
+                bytes;
+            shared_cache_bundle_->greedy_unique_states.fetch_add(1, std::memory_order_relaxed);
+            update_atomic_max(
+                shared_cache_bundle_->greedy_entries_peak,
+                static_cast<long long>(entries_current));
+            update_atomic_max(
+                shared_cache_bundle_->greedy_bytes_peak,
+                static_cast<long long>(bytes_current));
             return;
         }
         auto [it, inserted] = greedy_cache_.emplace(
@@ -1102,6 +1235,299 @@ class Solver {
             greedy_cache_entries_peak_,
             static_cast<long long>(greedy_cache_entries_current_));
         greedy_cache_bytes_peak_ = std::max(greedy_cache_bytes_peak_, greedy_cache_bytes_current_);
+    }
+
+    void register_parallel_clone(const Solver *clone) {
+        if (clone == nullptr || clone == this) {
+            return;
+        }
+        std::scoped_lock<std::mutex> guard(parallel_worker_clones_mutex_);
+        parallel_worker_clones_.push_back(clone);
+    }
+
+    static void accumulate_count_vector(
+        std::vector<long long> &dst,
+        const std::vector<long long> &src) {
+        if (dst.size() < src.size()) {
+            dst.resize(src.size(), 0);
+        }
+        for (size_t i = 0; i < src.size(); ++i) {
+            dst[i] += src[i];
+        }
+    }
+
+    static void accumulate_sum_vector(
+        std::vector<double> &dst,
+        const std::vector<double> &src) {
+        if (dst.size() < src.size()) {
+            dst.resize(src.size(), 0.0);
+        }
+        for (size_t i = 0; i < src.size(); ++i) {
+            dst[i] += src[i];
+        }
+    }
+
+    static void accumulate_max_vector(
+        std::vector<double> &dst,
+        const std::vector<double> &src) {
+        if (dst.size() < src.size()) {
+            dst.resize(src.size(), 0.0);
+        }
+        for (size_t i = 0; i < src.size(); ++i) {
+            dst[i] = std::max(dst[i], src[i]);
+        }
+    }
+
+    void absorb_worker_metrics(const Solver &worker) {
+        greedy_internal_nodes_ += worker.greedy_internal_nodes_;
+        greedy_subproblem_calls_ += worker.greedy_subproblem_calls_;
+        exact_dp_subproblem_calls_above_lookahead_ +=
+            worker.exact_dp_subproblem_calls_above_lookahead_;
+        greedy_cache_hits_ += worker.greedy_cache_hits_;
+        greedy_cache_states_ += worker.greedy_cache_states_;
+        greedy_interval_evals_ += worker.greedy_interval_evals_;
+        profiling_lp_solve_calls_ += worker.profiling_lp_solve_calls_;
+        profiling_lp_solve_sec_ += worker.profiling_lp_solve_sec_;
+        profiling_pricing_calls_ += worker.profiling_pricing_calls_;
+        profiling_pricing_sec_ += worker.profiling_pricing_sec_;
+        profiling_greedy_complete_calls_ += worker.profiling_greedy_complete_calls_;
+        profiling_greedy_complete_sec_ += worker.profiling_greedy_complete_sec_;
+        profiling_feature_prepare_sec_ += worker.profiling_feature_prepare_sec_;
+        profiling_candidate_nomination_sec_ += worker.profiling_candidate_nomination_sec_;
+        profiling_candidate_shortlist_sec_ += worker.profiling_candidate_shortlist_sec_;
+        profiling_candidate_generation_sec_ += worker.profiling_candidate_generation_sec_;
+        profiling_recursive_child_eval_sec_ += worker.profiling_recursive_child_eval_sec_;
+        heuristic_selector_nodes_ += worker.heuristic_selector_nodes_;
+        heuristic_selector_candidate_total_ += worker.heuristic_selector_candidate_total_;
+        heuristic_selector_candidate_pruned_total_ += worker.heuristic_selector_candidate_pruned_total_;
+        heuristic_selector_survivor_total_ += worker.heuristic_selector_survivor_total_;
+        heuristic_selector_leaf_optimal_nodes_ += worker.heuristic_selector_leaf_optimal_nodes_;
+        heuristic_selector_improving_split_nodes_ += worker.heuristic_selector_improving_split_nodes_;
+        heuristic_selector_improving_split_retained_nodes_ += worker.heuristic_selector_improving_split_retained_nodes_;
+        heuristic_selector_improving_split_margin_sum_ +=
+            worker.heuristic_selector_improving_split_margin_sum_;
+        heuristic_selector_improving_split_margin_max_ = std::max(
+            heuristic_selector_improving_split_margin_max_,
+            worker.heuristic_selector_improving_split_margin_max_);
+        above_lookahead_impurity_pairs_total_ += worker.above_lookahead_impurity_pairs_total_;
+        above_lookahead_hardloss_pairs_total_ += worker.above_lookahead_hardloss_pairs_total_;
+        above_lookahead_impurity_bucket_before_prune_total_ +=
+            worker.above_lookahead_impurity_bucket_before_prune_total_;
+        above_lookahead_impurity_bucket_after_prune_total_ +=
+            worker.above_lookahead_impurity_bucket_after_prune_total_;
+        above_lookahead_hardloss_bucket_before_prune_total_ +=
+            worker.above_lookahead_hardloss_bucket_before_prune_total_;
+        above_lookahead_hardloss_bucket_after_prune_total_ +=
+            worker.above_lookahead_hardloss_bucket_after_prune_total_;
+        profiling_refine_calls_ += worker.profiling_refine_calls_;
+        profiling_refine_sec_ += worker.profiling_refine_sec_;
+        partition_refinement_refine_calls_ += worker.partition_refinement_refine_calls_;
+        partition_refinement_refine_improved_ += worker.partition_refinement_refine_improved_;
+        partition_refinement_total_moves_ += worker.partition_refinement_total_moves_;
+        partition_refinement_bridge_policy_calls_ += worker.partition_refinement_bridge_policy_calls_;
+        partition_refinement_refine_windowed_calls_ += worker.partition_refinement_refine_windowed_calls_;
+        partition_refinement_refine_unwindowed_calls_ += worker.partition_refinement_refine_unwindowed_calls_;
+        partition_refinement_refine_overlap_segments_ += worker.partition_refinement_refine_overlap_segments_;
+        partition_refinement_refine_calls_with_overlap_ += worker.partition_refinement_refine_calls_with_overlap_;
+        partition_refinement_refine_calls_without_overlap_ += worker.partition_refinement_refine_calls_without_overlap_;
+        partition_refinement_candidate_total_ += worker.partition_refinement_candidate_total_;
+        partition_refinement_candidate_legal_ += worker.partition_refinement_candidate_legal_;
+        partition_refinement_candidate_source_size_rejects_ +=
+            worker.partition_refinement_candidate_source_size_rejects_;
+        partition_refinement_candidate_target_size_rejects_ +=
+            worker.partition_refinement_candidate_target_size_rejects_;
+        partition_refinement_candidate_descent_eligible_ +=
+            worker.partition_refinement_candidate_descent_eligible_;
+        partition_refinement_candidate_descent_rejected_ +=
+            worker.partition_refinement_candidate_descent_rejected_;
+        partition_refinement_candidate_bridge_eligible_ +=
+            worker.partition_refinement_candidate_bridge_eligible_;
+        partition_refinement_candidate_bridge_window_blocked_ +=
+            worker.partition_refinement_candidate_bridge_window_blocked_;
+        partition_refinement_candidate_bridge_used_blocked_ +=
+            worker.partition_refinement_candidate_bridge_used_blocked_;
+        partition_refinement_candidate_bridge_guide_rejected_ +=
+            worker.partition_refinement_candidate_bridge_guide_rejected_;
+        partition_refinement_candidate_cleanup_eligible_ +=
+            worker.partition_refinement_candidate_cleanup_eligible_;
+        partition_refinement_candidate_cleanup_primary_rejected_ +=
+            worker.partition_refinement_candidate_cleanup_primary_rejected_;
+        partition_refinement_candidate_cleanup_complexity_rejected_ +=
+            worker.partition_refinement_candidate_cleanup_complexity_rejected_;
+        partition_refinement_candidate_score_rejected_ +=
+            worker.partition_refinement_candidate_score_rejected_;
+        partition_refinement_descent_moves_ += worker.partition_refinement_descent_moves_;
+        partition_refinement_bridge_moves_ += worker.partition_refinement_bridge_moves_;
+        partition_refinement_simplify_moves_ += worker.partition_refinement_simplify_moves_;
+        partition_refinement_total_hard_gain_ += worker.partition_refinement_total_hard_gain_;
+        partition_refinement_total_soft_gain_ += worker.partition_refinement_total_soft_gain_;
+        partition_refinement_total_delta_j_ += worker.partition_refinement_total_delta_j_;
+        partition_refinement_total_component_delta_ += worker.partition_refinement_total_component_delta_;
+        partition_refinement_final_geo_wins_ += worker.partition_refinement_final_geo_wins_;
+        partition_refinement_final_block_wins_ += worker.partition_refinement_final_block_wins_;
+        family_compare_total_ += worker.family_compare_total_;
+        family_compare_equivalent_ += worker.family_compare_equivalent_;
+        family1_both_wins_ += worker.family1_both_wins_;
+        family2_hard_loss_wins_ += worker.family2_hard_loss_wins_;
+        family2_hard_impurity_wins_ += worker.family2_hard_impurity_wins_;
+        family2_joint_impurity_wins_ += worker.family2_joint_impurity_wins_;
+        family2_both_wins_ += worker.family2_both_wins_;
+        family_metric_disagreement_ += worker.family_metric_disagreement_;
+        family_hard_loss_ties_ += worker.family_hard_loss_ties_;
+        family_hard_impurity_ties_ += worker.family_hard_impurity_ties_;
+        family_joint_impurity_ties_ += worker.family_joint_impurity_ties_;
+        family_neither_both_wins_ += worker.family_neither_both_wins_;
+        family1_selected_by_equivalence_ += worker.family1_selected_by_equivalence_;
+        family1_selected_by_dominance_ += worker.family1_selected_by_dominance_;
+        family2_selected_by_dominance_ += worker.family2_selected_by_dominance_;
+        family_sent_both_ += worker.family_sent_both_;
+        family1_hard_loss_sum_ += worker.family1_hard_loss_sum_;
+        family2_hard_loss_sum_ += worker.family2_hard_loss_sum_;
+        family_hard_loss_delta_sum_ += worker.family_hard_loss_delta_sum_;
+        family1_hard_impurity_sum_ += worker.family1_hard_impurity_sum_;
+        family2_hard_impurity_sum_ += worker.family2_hard_impurity_sum_;
+        family_hard_impurity_delta_sum_ += worker.family_hard_impurity_delta_sum_;
+        family1_joint_impurity_sum_ += worker.family1_joint_impurity_sum_;
+        family2_joint_impurity_sum_ += worker.family2_joint_impurity_sum_;
+        family_joint_impurity_delta_sum_ += worker.family_joint_impurity_delta_sum_;
+        family1_soft_impurity_sum_ += worker.family1_soft_impurity_sum_;
+        family2_soft_impurity_sum_ += worker.family2_soft_impurity_sum_;
+        family_soft_impurity_delta_sum_ += worker.family_soft_impurity_delta_sum_;
+        atomized_features_prepared_ += worker.atomized_features_prepared_;
+        atomized_coarse_candidates_ += worker.atomized_coarse_candidates_;
+        atomized_final_candidates_ += worker.atomized_final_candidates_;
+        atomized_coarse_pruned_candidates_ += worker.atomized_coarse_pruned_candidates_;
+        atomized_compression_features_applied_ += worker.atomized_compression_features_applied_;
+        atomized_compression_features_collapsed_to_single_block_ +=
+            worker.atomized_compression_features_collapsed_to_single_block_;
+        atomized_compression_atoms_before_total_ += worker.atomized_compression_atoms_before_total_;
+        atomized_compression_blocks_after_total_ += worker.atomized_compression_blocks_after_total_;
+        atomized_compression_atoms_merged_total_ += worker.atomized_compression_atoms_merged_total_;
+        nominee_unique_total_ += worker.nominee_unique_total_;
+        nominee_child_interval_lookups_ += worker.nominee_child_interval_lookups_;
+        nominee_child_interval_unique_ += worker.nominee_child_interval_unique_;
+        nominee_exactified_total_ += worker.nominee_exactified_total_;
+        nominee_incumbent_updates_ += worker.nominee_incumbent_updates_;
+        nominee_threatening_samples_ += worker.nominee_threatening_samples_;
+        nominee_threatening_sum_ += worker.nominee_threatening_sum_;
+        nominee_threatening_max_ = std::max(
+            nominee_threatening_max_,
+            worker.nominee_threatening_max_);
+        nominee_certificate_nodes_ += worker.nominee_certificate_nodes_;
+        nominee_certificate_exhausted_nodes_ += worker.nominee_certificate_exhausted_nodes_;
+        nominee_exactified_until_certificate_total_ +=
+            worker.nominee_exactified_until_certificate_total_;
+        nominee_exactified_until_certificate_max_ = std::max(
+            nominee_exactified_until_certificate_max_,
+            worker.nominee_exactified_until_certificate_max_);
+        nominee_exactify_prefix_total_ += worker.nominee_exactify_prefix_total_;
+        nominee_exactify_prefix_max_ = std::max(
+            nominee_exactify_prefix_max_,
+            worker.nominee_exactify_prefix_max_);
+        nominee_certificate_min_remaining_lower_bound_sum_ +=
+            worker.nominee_certificate_min_remaining_lower_bound_sum_;
+        nominee_certificate_min_remaining_lower_bound_max_ = std::max(
+            nominee_certificate_min_remaining_lower_bound_max_,
+            worker.nominee_certificate_min_remaining_lower_bound_max_);
+        nominee_certificate_incumbent_exact_score_sum_ +=
+            worker.nominee_certificate_incumbent_exact_score_sum_;
+        nominee_certificate_incumbent_exact_score_max_ = std::max(
+            nominee_certificate_incumbent_exact_score_max_,
+            worker.nominee_certificate_incumbent_exact_score_max_);
+        accumulate_count_vector(
+            profiling_greedy_complete_calls_by_depth_,
+            worker.profiling_greedy_complete_calls_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_nodes_by_depth_,
+            worker.heuristic_selector_nodes_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_candidate_total_by_depth_,
+            worker.heuristic_selector_candidate_total_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_candidate_pruned_total_by_depth_,
+            worker.heuristic_selector_candidate_pruned_total_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_survivor_total_by_depth_,
+            worker.heuristic_selector_survivor_total_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_leaf_optimal_nodes_by_depth_,
+            worker.heuristic_selector_leaf_optimal_nodes_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_improving_split_nodes_by_depth_,
+            worker.heuristic_selector_improving_split_nodes_by_depth_);
+        accumulate_count_vector(
+            heuristic_selector_improving_split_retained_nodes_by_depth_,
+            worker.heuristic_selector_improving_split_retained_nodes_by_depth_);
+        accumulate_sum_vector(
+            heuristic_selector_improving_split_margin_sum_by_depth_,
+            worker.heuristic_selector_improving_split_margin_sum_by_depth_);
+        accumulate_max_vector(
+            heuristic_selector_improving_split_margin_max_by_depth_,
+            worker.heuristic_selector_improving_split_margin_max_by_depth_);
+        accumulate_count_vector(
+            partition_refinement_source_group_row_size_histogram_,
+            worker.partition_refinement_source_group_row_size_histogram_);
+        accumulate_count_vector(
+            partition_refinement_source_component_atom_size_histogram_,
+            worker.partition_refinement_source_component_atom_size_histogram_);
+        accumulate_count_vector(
+            partition_refinement_source_component_row_size_histogram_,
+            worker.partition_refinement_source_component_row_size_histogram_);
+        accumulate_count_vector(
+            greedy_feature_survivor_histogram_,
+            worker.greedy_feature_survivor_histogram_);
+        accumulate_count_vector(
+            nominee_exactified_until_certificate_histogram_,
+            worker.nominee_exactified_until_certificate_histogram_);
+        accumulate_count_vector(
+            nominee_certificate_stop_depth_histogram_,
+            worker.nominee_certificate_stop_depth_histogram_);
+        accumulate_count_vector(
+            nominee_exactify_prefix_histogram_,
+            worker.nominee_exactify_prefix_histogram_);
+        accumulate_count_vector(
+            atomized_feature_atom_count_histogram_,
+            worker.atomized_feature_atom_count_histogram_);
+        accumulate_count_vector(
+            atomized_feature_block_atom_count_histogram_,
+            worker.atomized_feature_block_atom_count_histogram_);
+        accumulate_count_vector(
+            atomized_feature_q_effective_histogram_,
+            worker.atomized_feature_q_effective_histogram_);
+        accumulate_count_vector(
+            greedy_feature_preserved_histogram_,
+            worker.greedy_feature_preserved_histogram_);
+        accumulate_count_vector(
+            greedy_candidate_count_histogram_,
+            worker.greedy_candidate_count_histogram_);
+    }
+
+    void absorb_registered_parallel_worker_metrics() {
+        if (parallel_worker_metrics_absorbed_) {
+            return;
+        }
+        parallel_worker_metrics_absorbed_ = true;
+        std::vector<const Solver *> clones;
+        {
+            std::scoped_lock<std::mutex> guard(parallel_worker_clones_mutex_);
+            clones = parallel_worker_clones_;
+        }
+        for (const Solver *clone : clones) {
+            if (clone != nullptr) {
+                absorb_worker_metrics(*clone);
+            }
+        }
+        if (shared_cache_bundle_) {
+            greedy_cache_states_ =
+                shared_cache_bundle_->greedy_unique_states.load(std::memory_order_relaxed);
+            greedy_cache_entries_peak_ = std::max(
+                greedy_cache_entries_peak_,
+                shared_cache_bundle_->greedy_entries_peak.load(std::memory_order_relaxed));
+            greedy_cache_bytes_peak_ = std::max(
+                greedy_cache_bytes_peak_,
+                static_cast<size_t>(
+                    shared_cache_bundle_->greedy_bytes_peak.load(std::memory_order_relaxed)));
+        }
     }
 
     void record_greedy_complete_call(int depth_remaining) {
@@ -1662,9 +2088,19 @@ class Solver {
 
     CanonicalSignatureSummary get_canonical_signature_summary(const std::vector<int> &indices) const {
         const std::string key = canonical_signature_key(indices);
-        auto cache_it = canonical_signature_cache_.find(key);
-        if (cache_it != canonical_signature_cache_.end()) {
-            return cache_it->second;
+        if (shared_cache_bundle_) {
+            SharedCanonicalSignatureCacheShard &shard =
+                shared_cache_bundle_->canonical_signature_shards[shared_cache_shard_index(key)];
+            std::scoped_lock<std::mutex> guard(shard.mutex);
+            auto cache_it = shard.entries.find(key);
+            if (cache_it != shard.entries.end()) {
+                return cache_it->second;
+            }
+        } else {
+            auto cache_it = canonical_signature_cache_.find(key);
+            if (cache_it != canonical_signature_cache_.end()) {
+                return cache_it->second;
+            }
         }
 
         CanonicalSignatureSummary summary;
@@ -1740,7 +2176,14 @@ class Solver {
         }
         summary.block_count = blocks.size();
 
-        canonical_signature_cache_.emplace(key, summary);
+        if (shared_cache_bundle_) {
+            SharedCanonicalSignatureCacheShard &shard =
+                shared_cache_bundle_->canonical_signature_shards[shared_cache_shard_index(key)];
+            std::scoped_lock<std::mutex> guard(shard.mutex);
+            shard.entries.emplace(key, summary);
+        } else {
+            canonical_signature_cache_.emplace(key, summary);
+        }
         return summary;
     }
 
@@ -1783,7 +2226,8 @@ FitResult fit(
     int min_child_size,
     double time_limit_seconds,
     int max_branching,
-    int exactify_top_k
+    int exactify_top_k,
+    int worker_limit
 ) {
     Solver solver(
         x_flat,
@@ -1804,7 +2248,8 @@ FitResult fit(
         min_child_size,
         time_limit_seconds,
         max_branching,
-        exactify_top_k);
+        exactify_top_k,
+        worker_limit);
     return solver.fit();
 }
 
@@ -1857,7 +2302,8 @@ nlohmann::json debug_run_atomized_smoke_cases() {
             min_child_size,
             5.0,
             max_branching,
-            0);
+            0,
+            1);
         return nlohmann::json{
             {"name", name},
             {"objective", result.objective},

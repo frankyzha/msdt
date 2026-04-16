@@ -392,7 +392,7 @@
         return out;
     }
 
-    AtomizedCandidate refine_atomized_candidate_debr(
+    AtomizedCandidate refine_atomized_candidate_partition_locally(
         const std::vector<AtomizedAtom> &atoms,
         const AtomizedCandidate &seed,
         double mu_node,
@@ -796,14 +796,14 @@
         double mu_node
     ) {
         auto record_refinement = [&](const AtomizedRefinementSummary &summary) {
-            ++debr_refine_calls_;
-            debr_total_moves_ += summary.moves;
-            debr_total_hard_gain_ += summary.hard_gain;
-            debr_total_soft_gain_ += summary.soft_gain;
-            debr_total_delta_j_ += summary.delta_j;
-            debr_total_component_delta_ += summary.component_delta;
+            ++partition_refinement_refine_calls_;
+            partition_refinement_total_moves_ += summary.moves;
+            partition_refinement_total_hard_gain_ += summary.hard_gain;
+            partition_refinement_total_soft_gain_ += summary.soft_gain;
+            partition_refinement_total_delta_j_ += summary.delta_j;
+            partition_refinement_total_component_delta_ += summary.component_delta;
             if (summary.improved) {
-                ++debr_refine_improved_;
+                ++partition_refinement_refine_improved_;
             }
         };
 
@@ -811,33 +811,33 @@
         AtomizedCandidate block = solve_atomized_block_family(atoms, groups);
         if (!geometry.feasible) {
             AtomizedRefinementSummary block_summary;
-            AtomizedCandidate refined = refine_atomized_candidate_debr(atoms, block, mu_node, &block_summary);
+            AtomizedCandidate refined = refine_atomized_candidate_partition_locally(atoms, block, mu_node, &block_summary);
             record_refinement(block_summary);
             if (refined.feasible) {
-                ++debr_final_teacher_wins_;
+                ++partition_refinement_final_teacher_wins_;
             }
             return refined;
         }
         if (!block.feasible) {
             AtomizedRefinementSummary geometry_summary;
-            AtomizedCandidate refined = refine_atomized_candidate_debr(atoms, geometry, mu_node, &geometry_summary);
+            AtomizedCandidate refined = refine_atomized_candidate_partition_locally(atoms, geometry, mu_node, &geometry_summary);
             record_refinement(geometry_summary);
             if (refined.feasible) {
-                ++debr_final_geo_wins_;
+                ++partition_refinement_final_geo_wins_;
             }
             return refined;
         }
         AtomizedRefinementSummary geometry_summary;
         AtomizedRefinementSummary block_summary;
-        geometry = refine_atomized_candidate_debr(atoms, geometry, mu_node, &geometry_summary);
-        block = refine_atomized_candidate_debr(atoms, block, mu_node, &block_summary);
+        geometry = refine_atomized_candidate_partition_locally(atoms, geometry, mu_node, &geometry_summary);
+        block = refine_atomized_candidate_partition_locally(atoms, block, mu_node, &block_summary);
         record_refinement(geometry_summary);
         record_refinement(block_summary);
         const bool block_wins = atomized_candidate_better(block, geometry, groups, groups);
         if (block_wins) {
-            ++debr_final_teacher_wins_;
+            ++partition_refinement_final_teacher_wins_;
         } else {
-            ++debr_final_geo_wins_;
+            ++partition_refinement_final_geo_wins_;
         }
         return block_wins ? block : geometry;
     }

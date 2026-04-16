@@ -35,12 +35,12 @@
             selected = select_family_nominees(std::move(impurity), std::move(misclassification));
         } else if (impurity.feasible) {
             if (diagnostics_enabled()) {
-                ++const_cast<Solver *>(this)->debr_final_geo_wins_;
+                ++const_cast<Solver *>(this)->partition_refinement_final_geo_wins_;
             }
             selected.push_back(std::move(impurity));
         } else if (misclassification.feasible) {
             if (diagnostics_enabled()) {
-                ++const_cast<Solver *>(this)->debr_final_block_wins_;
+                ++const_cast<Solver *>(this)->partition_refinement_final_block_wins_;
             }
             selected.push_back(std::move(misclassification));
         }
@@ -467,9 +467,8 @@
         std::string state_key;
         if (use_greedy_cache) {
             state_key = serialized_indices_depth_key(indices, depth_remaining);
-            auto cache_it = greedy_cache_.find(state_key);
-            if (cache_it != greedy_cache_.end()) {
-                ++greedy_cache_hits_;
+            GreedyResult cached_result;
+            if (greedy_cache_lookup(state_key, cached_result)) {
                 trace_greedy_snapshot(
                     "cache_hit",
                     depth_remaining,
@@ -479,10 +478,10 @@
                     0U,
                     0U,
                     0U,
-                    cache_it->second.result.objective,
-                    cache_it->second.result.objective,
+                    cached_result.objective,
+                    cached_result.objective,
                     0U);
-                return cache_it->second.result;
+                return cached_result;
             }
         }
         trace_greedy_snapshot(
@@ -1039,19 +1038,41 @@
             std::shared_ptr<Node> tree;
         };
 
-        std::vector<ExactNomineeResult> exact_results(nominee_evals.size());
-        std::vector<unsigned char> finalized(nominee_evals.size(), 0U);
-        size_t exact_evaluated_total = 0U;
+        struct CachedExactChildren {
+            double objective = kInfinity;
+            std::vector<std::shared_ptr<Node>> child_nodes;
+        };
+
+        std::unordered_map<std::string, CachedExactChildren> exact_child_eval_cache;
+        exact_child_eval_cache.reserve(alive_indices.empty() ? 1U : alive_indices.size());
+        std::mutex exact_child_eval_cache_mutex;
+        const size_t exact_evaluated_total = exact_mode
+            ? std::min(exactify_budget_count, alive_indices.size())
+            : 1U;
         size_t incumbent_update_count = 0U;
-        size_t processed_candidate_count = 0U;
-        size_t recurse_attempt_count = 0U;
+        std::atomic<size_t> processed_candidate_count{0U};
+        std::atomic<size_t> recurse_attempt_count{0U};
         const size_t depth_bucket = depth_remaining < 0 ? 0U : static_cast<size_t>(depth_remaining);
         std::shared_ptr<Node> best_exact_tree = leaf_tree;
         double best_exact_objective = leaf_objective;
         size_t best_exact_idx = std::numeric_limits<size_t>::max();
-        std::vector<std::shared_ptr<Node>> child_nodes;
 
-        auto materialize_nominee = [&](NomineeEval &eval,
+        auto nominee_child_partition_key = [&](const NomineeEval &eval) {
+            std::string key;
+            const uint64_t child_count = static_cast<uint64_t>(eval.child_indices.size());
+            key.append(reinterpret_cast<const char *>(&child_count), sizeof(child_count));
+            for (const std::vector<int> &subset_sorted : eval.child_indices) {
+                std::string child_key =
+                    serialized_indices_depth_key(subset_sorted, depth_remaining - 1);
+                const uint64_t child_key_size = static_cast<uint64_t>(child_key.size());
+                key.append(reinterpret_cast<const char *>(&child_key_size), sizeof(child_key_size));
+                key.append(child_key);
+            }
+            return key;
+        };
+
+        auto materialize_nominee = [&](Solver &eval_solver,
+                                      NomineeEval &eval,
                                       const PreparedFeatureAtomized &prepared,
                                       double incumbent_limit) -> bool {
             if (eval.materialized) {
@@ -1092,7 +1113,7 @@
                     eval.materialized = true;
                     return false;
                 }
-                SubproblemStats child_stats = compute_subproblem_stats(subset_sorted);
+                SubproblemStats child_stats = eval_solver.compute_subproblem_stats(subset_sorted);
                 const bool child_is_leaf =
                     depth_remaining == 1 ||
                     child_stats.pure ||
@@ -1100,7 +1121,7 @@
                 const double child_lower_bound =
                     child_is_leaf
                         ? child_stats.leaf_objective
-                        : signature_bound_for_indices(subset_sorted);
+                        : eval_solver.signature_bound_for_indices(subset_sorted);
                 lower_bound += child_lower_bound;
                 upper_bound += child_stats.leaf_objective;
                 eval.child_indices.push_back(std::move(subset_sorted));
@@ -1124,35 +1145,56 @@
             return true;
         };
 
-        auto exactify_nominee = [&](size_t idx) -> const ExactNomineeResult & {
-            if (finalized[idx]) {
-                return exact_results[idx];
+        auto update_shared_best = [&](std::atomic<double> &shared_best, double candidate_objective) {
+            double observed = shared_best.load(std::memory_order_relaxed);
+            while (candidate_objective + kEpsUpdate < observed &&
+                   !shared_best.compare_exchange_weak(
+                       observed,
+                       candidate_objective,
+                       std::memory_order_relaxed,
+                       std::memory_order_relaxed)) {
             }
-            NomineeEval &eval = nominee_evals[idx];
+        };
+
+        auto evaluate_exact_nominee = [&](Solver &eval_solver,
+                                          NomineeEval eval,
+                                          double incumbent_limit,
+                                          std::atomic<double> *shared_best = nullptr) -> ExactNomineeResult {
             const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)eval.feature];
             ExactNomineeResult result;
             if (!prepared.valid) {
-                finalized[idx] = 1U;
-                exact_results[idx] = std::move(result);
-                ++exact_evaluated_total;
-                return exact_results[idx];
+                return result;
             }
-            if (!materialize_nominee(eval, prepared, best_exact_objective)) {
-                finalized[idx] = 1U;
-                exact_results[idx] = std::move(result);
-                ++exact_evaluated_total;
-                return exact_results[idx];
+            if (!materialize_nominee(eval_solver, eval, prepared, incumbent_limit)) {
+                return result;
             }
-            if (eval.lower_bound + kEpsUpdate >= best_exact_objective) {
-                finalized[idx] = 1U;
-                exact_results[idx] = std::move(result);
-                ++exact_evaluated_total;
-                return exact_results[idx];
+            if (eval.lower_bound + kEpsUpdate >= incumbent_limit) {
+                return result;
             }
 
-            ++processed_candidate_count;
+            const std::string child_partition_key = nominee_child_partition_key(eval);
+            {
+                std::scoped_lock<std::mutex> guard(exact_child_eval_cache_mutex);
+                auto cache_it = exact_child_eval_cache.find(child_partition_key);
+                if (cache_it != exact_child_eval_cache.end()) {
+                    std::shared_ptr<Node> tree = build_internal_node_from_group_spans(
+                        eval.feature,
+                        eval.group_spans,
+                        cache_it->second.child_nodes,
+                        leaf_tree->prediction,
+                        (int)indices.size());
+                    if (tree) {
+                        result.valid = true;
+                        result.objective = cache_it->second.objective;
+                        result.tree = std::move(tree);
+                    }
+                    return result;
+                }
+            }
+
+            processed_candidate_count.fetch_add(1U, std::memory_order_relaxed);
             double objective = 0.0;
-            child_nodes.clear();
+            std::vector<std::shared_ptr<Node>> child_nodes;
             child_nodes.reserve(eval.child_indices.size());
             bool build_ok = true;
             for (size_t group_idx = 0; group_idx < eval.child_indices.size(); ++group_idx) {
@@ -1169,22 +1211,30 @@
                     objective += child_objective;
                     child_nodes.push_back(child_tree);
                 } else {
-                    ++recurse_attempt_count;
-                    ScopedTimer recursion_timer(profiling_recursive_child_eval_sec_, profiling_enabled_);
-                    GreedyResult child = solve_subproblem(
+                    recurse_attempt_count.fetch_add(1U, std::memory_order_relaxed);
+                    GreedyResult child = eval_solver.solve_subproblem(
                         std::move(eval.child_indices[group_idx]),
                         child_stats,
                         depth_remaining - 1);
                     objective += child.objective;
                     child_nodes.push_back(child.tree);
                 }
-                if (objective + kEpsUpdate >= best_exact_objective) {
+                const double running_limit = shared_best != nullptr
+                    ? shared_best->load(std::memory_order_relaxed)
+                    : incumbent_limit;
+                if (objective + kEpsUpdate >= running_limit) {
                     build_ok = false;
                     break;
                 }
             }
 
             if (build_ok) {
+                {
+                    std::scoped_lock<std::mutex> guard(exact_child_eval_cache_mutex);
+                    exact_child_eval_cache.emplace(
+                        child_partition_key,
+                        CachedExactChildren{objective, child_nodes});
+                }
                 std::shared_ptr<Node> tree = build_internal_node_from_group_spans(
                     eval.feature,
                     eval.group_spans,
@@ -1195,36 +1245,113 @@
                     result.valid = true;
                     result.objective = objective;
                     result.tree = tree;
+                    if (shared_best != nullptr) {
+                        update_shared_best(*shared_best, objective);
+                    }
                 }
             }
-
-            finalized[idx] = 1U;
-            exact_results[idx] = std::move(result);
-            ++exact_evaluated_total;
-            return exact_results[idx];
+            return result;
         };
 
         if (exact_mode) {
             const size_t exactify_limit = std::min(exactify_budget_count, alive_indices.size());
-            for (size_t order = 0; order < exactify_limit; ++order) {
-                const size_t idx = alive_indices[order];
-                if (finalized[idx]) {
-                    continue;
+            const bool enable_parallel_exactify =
+                worker_limit_ > 1 &&
+                exactify_limit > 1U &&
+                !profiling_enabled_ &&
+                !diagnostics_enabled_;
+            if (enable_parallel_exactify) {
+                std::vector<ExactNomineeResult> parallel_results(exactify_limit);
+                std::atomic<double> shared_best(best_exact_objective);
+                auto acquire_worker_solver = [&]() -> Solver & {
+                    struct CachedClone {
+                        std::uint64_t owner_instance_id = 0;
+                        std::unique_ptr<Solver> solver;
+                    };
+                    static thread_local CachedClone cached_clone;
+                    if (cached_clone.owner_instance_id != solver_instance_id_ || !cached_clone.solver) {
+                        cached_clone.owner_instance_id = solver_instance_id_;
+                        cached_clone.solver = std::make_unique<Solver>(
+                            x_flat_,
+                            n_rows_,
+                            n_features_,
+                            y_,
+                            sample_weight_raw_,
+                            teacher_logit_raw_,
+                            teacher_class_count_,
+                            teacher_boundary_gain_raw_,
+                            teacher_boundary_cover_raw_,
+                            teacher_boundary_value_jump_raw_,
+                            teacher_boundary_cols_,
+                            full_depth_budget_,
+                            lookahead_depth_,
+                            regularization_,
+                            min_split_size_,
+                            min_child_size_,
+                            time_limit_seconds_,
+                            max_branching_,
+                            exactify_top_k_,
+                            1);
+                        cached_clone.solver->shared_cache_bundle_ = shared_cache_bundle_;
+                        cached_clone.solver->start_time_ = start_time_;
+                        register_parallel_clone(cached_clone.solver.get());
+                    }
+                    return *cached_clone.solver;
+                };
+                tbb::task_arena arena(worker_limit_);
+                arena.execute([&]() {
+                    tbb::parallel_for(
+                        tbb::blocked_range<size_t>(0U, exactify_limit),
+                        [&](const tbb::blocked_range<size_t> &range) {
+                            Solver &worker_solver = acquire_worker_solver();
+                            for (size_t order = range.begin(); order != range.end(); ++order) {
+                                const size_t idx = alive_indices[order];
+                                parallel_results[order] = evaluate_exact_nominee(
+                                    worker_solver,
+                                    nominee_evals[idx],
+                                    shared_best.load(std::memory_order_relaxed),
+                                    &shared_best);
+                            }
+                        });
+                });
+                for (size_t order = 0; order < exactify_limit; ++order) {
+                    const size_t idx = alive_indices[order];
+                    const ExactNomineeResult &result = parallel_results[order];
+                    if (result.valid && result.tree &&
+                        (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
+                         (best_exact_idx < nominee_evals.size() &&
+                          std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
+                          nominee_prefer(idx, best_exact_idx)))) {
+                        best_exact_objective = result.objective;
+                        best_exact_tree = result.tree;
+                        best_exact_idx = idx;
+                        ++incumbent_update_count;
+                    }
                 }
-                const ExactNomineeResult &result = exactify_nominee(idx);
-                if (result.valid && result.tree &&
-                    (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
-                     (best_exact_idx < nominee_evals.size() &&
-                      std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
-                      nominee_prefer(idx, best_exact_idx)))) {
-                    best_exact_objective = result.objective;
-                    best_exact_tree = result.tree;
-                    best_exact_idx = idx;
-                    ++incumbent_update_count;
+            } else {
+                for (size_t order = 0; order < exactify_limit; ++order) {
+                    const size_t idx = alive_indices[order];
+                    const ExactNomineeResult result = evaluate_exact_nominee(
+                        *this,
+                        nominee_evals[idx],
+                        best_exact_objective);
+                    if (result.valid && result.tree &&
+                        (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
+                         (best_exact_idx < nominee_evals.size() &&
+                          std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
+                          nominee_prefer(idx, best_exact_idx)))) {
+                        best_exact_objective = result.objective;
+                        best_exact_tree = result.tree;
+                        best_exact_idx = idx;
+                        ++incumbent_update_count;
+                    }
                 }
             }
         } else {
-            const ExactNomineeResult &result = exactify_nominee(0U);
+            const ExactNomineeResult result = evaluate_exact_nominee(
+                *this,
+                nominee_evals[0U],
+                best_exact_objective);
             if (result.valid && result.tree && result.objective + kEpsUpdate < best_exact_objective) {
                 best_exact_objective = result.objective;
                 best_exact_tree = result.tree;
@@ -1296,8 +1423,8 @@
             preserved_feature_count,
             candidate_evals.size(),
             exactified_total,
-            processed_candidate_count,
-            recurse_attempt_count,
+            processed_candidate_count.load(std::memory_order_relaxed),
+            recurse_attempt_count.load(std::memory_order_relaxed),
             solved.objective,
             best_lower_bound,
             incumbent_update_count);

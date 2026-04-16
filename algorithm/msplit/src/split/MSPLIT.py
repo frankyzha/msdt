@@ -40,35 +40,35 @@ _NATIVE_INT_METRIC_KEYS = _metric_keys(
     family1_selected_by_dominance
     family2_selected_by_dominance
     family_sent_both
-    debr_refine_calls
-    debr_refine_improved
-    debr_total_moves
-    debr_bridge_policy_calls
-    debr_refine_windowed_calls
-    debr_refine_unwindowed_calls
-    debr_refine_overlap_segments
-    debr_refine_calls_with_overlap
-    debr_refine_calls_without_overlap
-    debr_candidate_total
-    debr_candidate_legal
-    debr_candidate_source_size_rejects
-    debr_candidate_target_size_rejects
-    debr_candidate_descent_eligible
-    debr_candidate_descent_rejected
-    debr_candidate_bridge_eligible
-    debr_candidate_bridge_window_blocked
-    debr_candidate_bridge_used_blocked
-    debr_candidate_bridge_guide_rejected
-    debr_candidate_cleanup_eligible
-    debr_candidate_cleanup_primary_rejected
-    debr_candidate_cleanup_complexity_rejected
-    debr_candidate_score_rejected
-    debr_descent_moves
-    debr_bridge_moves
-    debr_simplify_moves
-    debr_total_component_delta
-    debr_final_geo_wins
-    debr_final_block_wins
+    partition_refinement_refine_calls
+    partition_refinement_refine_improved
+    partition_refinement_total_moves
+    partition_refinement_bridge_policy_calls
+    partition_refinement_refine_windowed_calls
+    partition_refinement_refine_unwindowed_calls
+    partition_refinement_refine_overlap_segments
+    partition_refinement_refine_calls_with_overlap
+    partition_refinement_refine_calls_without_overlap
+    partition_refinement_candidate_total
+    partition_refinement_candidate_legal
+    partition_refinement_candidate_source_size_rejects
+    partition_refinement_candidate_target_size_rejects
+    partition_refinement_candidate_descent_eligible
+    partition_refinement_candidate_descent_rejected
+    partition_refinement_candidate_bridge_eligible
+    partition_refinement_candidate_bridge_window_blocked
+    partition_refinement_candidate_bridge_used_blocked
+    partition_refinement_candidate_bridge_guide_rejected
+    partition_refinement_candidate_cleanup_eligible
+    partition_refinement_candidate_cleanup_primary_rejected
+    partition_refinement_candidate_cleanup_complexity_rejected
+    partition_refinement_candidate_score_rejected
+    partition_refinement_descent_moves
+    partition_refinement_bridge_moves
+    partition_refinement_simplify_moves
+    partition_refinement_total_component_delta
+    partition_refinement_final_geo_wins
+    partition_refinement_final_block_wins
     atomized_features_prepared
     atomized_coarse_candidates
     atomized_final_candidates
@@ -137,9 +137,9 @@ _NATIVE_FLOAT_METRIC_KEYS = _metric_keys(
     family1_joint_impurity_sum
     family2_joint_impurity_sum
     family_joint_impurity_delta_sum
-    debr_total_hard_gain
-    debr_total_soft_gain
-    debr_total_delta_j
+    partition_refinement_total_hard_gain
+    partition_refinement_total_soft_gain
+    partition_refinement_total_delta_j
     nominee_threatening_sum
     profiling_lp_solve_sec
     profiling_pricing_sec
@@ -159,9 +159,9 @@ _NATIVE_FLOAT_METRIC_KEYS = _metric_keys(
 
 _NATIVE_LIST_METRIC_KEYS = _metric_keys(
     """
-    debr_source_group_row_size_histogram
-    debr_source_component_atom_size_histogram
-    debr_source_component_row_size_histogram
+    partition_refinement_source_group_row_size_histogram
+    partition_refinement_source_component_atom_size_histogram
+    partition_refinement_source_component_row_size_histogram
     greedy_feature_survivor_histogram
     atomized_feature_atom_count_histogram
     atomized_feature_block_atom_count_histogram
@@ -239,6 +239,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         min_child_size: int = 5,
         min_split_size: int | None = None,
         max_branching: int = 0,
+        worker_limit: int = 1,
         time_limit: int = 100,
         verbose: bool = False,
         random_state: int = 0,
@@ -254,6 +255,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         self.min_child_size = min_child_size
         self.min_split_size = min_split_size
         self.max_branching = max_branching
+        self.worker_limit = worker_limit
         self.time_limit = time_limit
         self.verbose = verbose
         self.random_state = random_state
@@ -352,6 +354,8 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             raise ValueError("min_child_size must be at least 1")
         if self.max_branching < 0:
             raise ValueError("max_branching must be >= 0 (0 means unlimited)")
+        if int(self.worker_limit) < 0:
+            raise ValueError("worker_limit must be >= 0 (0 means use all available CPUs)")
         if self.reg < 0:
             raise ValueError("reg must be non-negative")
         if self.exactify_top_k is not None and int(self.exactify_top_k) < 1:
@@ -389,6 +393,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
                     float(self.time_limit),
                     int(self.max_branching),
                     int(self.exactify_top_k) if self.exactify_top_k is not None else 0,
+                    int(self.worker_limit),
                 )
             finally:
                 if restore_cache_env:

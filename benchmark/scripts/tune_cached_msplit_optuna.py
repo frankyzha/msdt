@@ -5,7 +5,6 @@ This utility is kept for focused single-algorithm experiments. The maintained
 benchmark entrypoints for MSPLIT vs ShapeCART are:
 
 - ``benchmark_cached_optuna_msplit_vs_shapecart.py``
-- ``benchmark_cached_gridcv_msplit_vs_shapecart.py``
 - ``benchmark_cached_fixed_config_msplit_vs_shapecart.py``
 """
 
@@ -73,6 +72,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timing-mode", choices=("fast", "fair"), default="fast")
     parser.add_argument("--lgb-num-threads", type=int, default=DEFAULT_LGB_NUM_THREADS)
     parser.add_argument("--exactify-top-k", type=int, default=DEFAULT_EXACTIFY_TOP_K)
+    parser.add_argument("--worker-limit", type=int, default=1)
     parser.add_argument("--force-rebuild-cache", action="store_true")
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args()
@@ -200,6 +200,7 @@ def main() -> int:
             min_split_size=resolved_min_split_size,
             min_child_size=resolved_min_child_size,
             max_branching=int(args.max_branching),
+            worker_limit=int(args.worker_limit),
         )
         val_accuracy = result.get("val_accuracy")
         if val_accuracy is None:
@@ -226,6 +227,7 @@ def main() -> int:
         min_split_size=resolved_min_split_size,
         min_child_size=resolved_min_child_size,
         max_branching=int(args.max_branching),
+        worker_limit=int(args.worker_limit),
     )
 
     trials = [

@@ -1,6 +1,6 @@
     #include "msplit_atomized_support.cpp"
 
-    AtomizedCandidate refine_atomized_candidate_debr(
+    AtomizedCandidate refine_atomized_candidate_partition_locally(
         const std::vector<AtomizedAtom> &atoms,
         const AtomizedCandidate &seed,
         double mu_node,
@@ -1391,44 +1391,44 @@
                 dst[i] += src[i];
             }
         };
-        ++telemetry.debr_refine_calls;
-        telemetry.debr_total_moves += summary.moves;
-        telemetry.debr_bridge_policy_calls += summary.bridge_policy_calls;
-        telemetry.debr_refine_windowed_calls += summary.refine_windowed_calls;
-        telemetry.debr_refine_unwindowed_calls += summary.refine_unwindowed_calls;
-        telemetry.debr_refine_overlap_segments += summary.refine_overlap_segments;
-        telemetry.debr_refine_calls_with_overlap += summary.refine_calls_with_overlap;
-        telemetry.debr_refine_calls_without_overlap += summary.refine_calls_without_overlap;
-        telemetry.debr_candidate_total += summary.candidate_total;
-        telemetry.debr_candidate_legal += summary.candidate_legal;
-        telemetry.debr_candidate_source_size_rejects += summary.candidate_source_size_rejects;
-        telemetry.debr_candidate_target_size_rejects += summary.candidate_target_size_rejects;
-        telemetry.debr_candidate_descent_eligible += summary.candidate_descent_eligible;
-        telemetry.debr_candidate_descent_rejected += summary.candidate_descent_rejected;
-        telemetry.debr_candidate_bridge_eligible += summary.candidate_bridge_eligible;
-        telemetry.debr_candidate_bridge_window_blocked += summary.candidate_bridge_window_blocked;
-        telemetry.debr_candidate_bridge_used_blocked += summary.candidate_bridge_used_blocked;
-        telemetry.debr_candidate_bridge_guide_rejected += summary.candidate_bridge_guide_rejected;
-        telemetry.debr_candidate_cleanup_eligible += summary.candidate_cleanup_eligible;
-        telemetry.debr_candidate_cleanup_primary_rejected += summary.candidate_cleanup_primary_rejected;
-        telemetry.debr_candidate_cleanup_complexity_rejected += summary.candidate_cleanup_complexity_rejected;
-        telemetry.debr_candidate_score_rejected += summary.candidate_score_rejected;
-        telemetry.debr_descent_moves += summary.descent_moves;
-        telemetry.debr_bridge_moves += summary.bridge_moves;
-        telemetry.debr_simplify_moves += summary.simplify_moves;
-        accumulate_histogram(summary.source_group_row_size_histogram, telemetry.debr_source_group_row_size_histogram);
+        ++telemetry.partition_refinement_refine_calls;
+        telemetry.partition_refinement_total_moves += summary.moves;
+        telemetry.partition_refinement_bridge_policy_calls += summary.bridge_policy_calls;
+        telemetry.partition_refinement_refine_windowed_calls += summary.refine_windowed_calls;
+        telemetry.partition_refinement_refine_unwindowed_calls += summary.refine_unwindowed_calls;
+        telemetry.partition_refinement_refine_overlap_segments += summary.refine_overlap_segments;
+        telemetry.partition_refinement_refine_calls_with_overlap += summary.refine_calls_with_overlap;
+        telemetry.partition_refinement_refine_calls_without_overlap += summary.refine_calls_without_overlap;
+        telemetry.partition_refinement_candidate_total += summary.candidate_total;
+        telemetry.partition_refinement_candidate_legal += summary.candidate_legal;
+        telemetry.partition_refinement_candidate_source_size_rejects += summary.candidate_source_size_rejects;
+        telemetry.partition_refinement_candidate_target_size_rejects += summary.candidate_target_size_rejects;
+        telemetry.partition_refinement_candidate_descent_eligible += summary.candidate_descent_eligible;
+        telemetry.partition_refinement_candidate_descent_rejected += summary.candidate_descent_rejected;
+        telemetry.partition_refinement_candidate_bridge_eligible += summary.candidate_bridge_eligible;
+        telemetry.partition_refinement_candidate_bridge_window_blocked += summary.candidate_bridge_window_blocked;
+        telemetry.partition_refinement_candidate_bridge_used_blocked += summary.candidate_bridge_used_blocked;
+        telemetry.partition_refinement_candidate_bridge_guide_rejected += summary.candidate_bridge_guide_rejected;
+        telemetry.partition_refinement_candidate_cleanup_eligible += summary.candidate_cleanup_eligible;
+        telemetry.partition_refinement_candidate_cleanup_primary_rejected += summary.candidate_cleanup_primary_rejected;
+        telemetry.partition_refinement_candidate_cleanup_complexity_rejected += summary.candidate_cleanup_complexity_rejected;
+        telemetry.partition_refinement_candidate_score_rejected += summary.candidate_score_rejected;
+        telemetry.partition_refinement_descent_moves += summary.descent_moves;
+        telemetry.partition_refinement_bridge_moves += summary.bridge_moves;
+        telemetry.partition_refinement_simplify_moves += summary.simplify_moves;
+        accumulate_histogram(summary.source_group_row_size_histogram, telemetry.partition_refinement_source_group_row_size_histogram);
         accumulate_histogram(
             summary.source_component_atom_size_histogram,
-            telemetry.debr_source_component_atom_size_histogram);
+            telemetry.partition_refinement_source_component_atom_size_histogram);
         accumulate_histogram(
             summary.source_component_row_size_histogram,
-            telemetry.debr_source_component_row_size_histogram);
-        telemetry.debr_total_hard_gain += summary.hard_gain;
-        telemetry.debr_total_soft_gain += summary.soft_gain;
-        telemetry.debr_total_delta_j += summary.delta_j;
-        telemetry.debr_total_component_delta += summary.component_delta;
+            telemetry.partition_refinement_source_component_row_size_histogram);
+        telemetry.partition_refinement_total_hard_gain += summary.hard_gain;
+        telemetry.partition_refinement_total_soft_gain += summary.soft_gain;
+        telemetry.partition_refinement_total_delta_j += summary.delta_j;
+        telemetry.partition_refinement_total_component_delta += summary.component_delta;
         if (summary.improved) {
-            ++telemetry.debr_refine_improved;
+            ++telemetry.partition_refinement_refine_improved;
         }
     }
 
@@ -1675,10 +1675,10 @@
             return selected;
         }
         if (impurity.feasible) {
-            ++debr_final_geo_wins_;
+            ++partition_refinement_final_geo_wins_;
             selected.push_back(std::move(impurity));
         } else if (misclassification.feasible) {
-            ++debr_final_block_wins_;
+            ++partition_refinement_final_block_wins_;
             selected.push_back(std::move(misclassification));
         }
         return selected;
@@ -1813,10 +1813,9 @@
             return key;
         };
         const std::string state_key = make_state_key(indices, depth_remaining);
-        auto cache_it = greedy_cache_.find(state_key);
-        if (cache_it != greedy_cache_.end()) {
-            ++greedy_cache_hits_;
-            return cache_it->second.result;
+        GreedyResult cached_result;
+        if (greedy_cache_lookup(state_key, cached_result)) {
+            return cached_result;
         }
 
         const SubproblemStats stats = compute_subproblem_stats(indices);

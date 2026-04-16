@@ -207,7 +207,8 @@ PYBIND11_MODULE(_libgosdt, m) {
            int min_child_size,
            double time_limit_seconds,
            int max_branching,
-           int exactify_top_k) {
+           int exactify_top_k,
+           int worker_limit) {
             if (z.ndim() != 2) {
                 throw std::runtime_error("msplit_fit expects z to be a 2D int array.");
             }
@@ -341,7 +342,8 @@ PYBIND11_MODULE(_libgosdt, m) {
                 min_child_size,
                 time_limit_seconds,
                 max_branching,
-                exactify_top_k);
+                exactify_top_k,
+                worker_limit);
 
             py::dict out;
             out["tree"] = py::str(solved.tree.dump());
@@ -355,41 +357,41 @@ PYBIND11_MODULE(_libgosdt, m) {
             out["greedy_cache_bytes_peak"] = solved.greedy_cache_bytes_peak;
             out["greedy_interval_evals"] = solved.greedy_interval_evals;
             out["elapsed_time_sec"] = solved.elapsed_time_sec;
-            out["debr_refine_calls"] = solved.debr_refine_calls;
-            out["debr_refine_improved"] = solved.debr_refine_improved;
-            out["debr_total_moves"] = solved.debr_total_moves;
-            out["debr_bridge_policy_calls"] = solved.debr_bridge_policy_calls;
-            out["debr_refine_windowed_calls"] = solved.debr_refine_windowed_calls;
-            out["debr_refine_unwindowed_calls"] = solved.debr_refine_unwindowed_calls;
-            out["debr_refine_overlap_segments"] = solved.debr_refine_overlap_segments;
-            out["debr_refine_calls_with_overlap"] = solved.debr_refine_calls_with_overlap;
-            out["debr_refine_calls_without_overlap"] = solved.debr_refine_calls_without_overlap;
-            out["debr_candidate_total"] = solved.debr_candidate_total;
-            out["debr_candidate_legal"] = solved.debr_candidate_legal;
-            out["debr_candidate_source_size_rejects"] = solved.debr_candidate_source_size_rejects;
-            out["debr_candidate_target_size_rejects"] = solved.debr_candidate_target_size_rejects;
-            out["debr_candidate_descent_eligible"] = solved.debr_candidate_descent_eligible;
-            out["debr_candidate_descent_rejected"] = solved.debr_candidate_descent_rejected;
-            out["debr_candidate_bridge_eligible"] = solved.debr_candidate_bridge_eligible;
-            out["debr_candidate_bridge_window_blocked"] = solved.debr_candidate_bridge_window_blocked;
-            out["debr_candidate_bridge_used_blocked"] = solved.debr_candidate_bridge_used_blocked;
-            out["debr_candidate_bridge_guide_rejected"] = solved.debr_candidate_bridge_guide_rejected;
-            out["debr_candidate_cleanup_eligible"] = solved.debr_candidate_cleanup_eligible;
-            out["debr_candidate_cleanup_primary_rejected"] = solved.debr_candidate_cleanup_primary_rejected;
-            out["debr_candidate_cleanup_complexity_rejected"] = solved.debr_candidate_cleanup_complexity_rejected;
-            out["debr_candidate_score_rejected"] = solved.debr_candidate_score_rejected;
-            out["debr_descent_moves"] = solved.debr_descent_moves;
-            out["debr_bridge_moves"] = solved.debr_bridge_moves;
-            out["debr_simplify_moves"] = solved.debr_simplify_moves;
-            out["debr_source_group_row_size_histogram"] = solved.debr_source_group_row_size_histogram;
-            out["debr_source_component_atom_size_histogram"] = solved.debr_source_component_atom_size_histogram;
-            out["debr_source_component_row_size_histogram"] = solved.debr_source_component_row_size_histogram;
-            out["debr_total_hard_gain"] = solved.debr_total_hard_gain;
-            out["debr_total_soft_gain"] = solved.debr_total_soft_gain;
-            out["debr_total_delta_j"] = solved.debr_total_delta_j;
-            out["debr_total_component_delta"] = solved.debr_total_component_delta;
-            out["debr_final_geo_wins"] = solved.debr_final_geo_wins;
-            out["debr_final_block_wins"] = solved.debr_final_block_wins;
+            out["partition_refinement_refine_calls"] = solved.partition_refinement_refine_calls;
+            out["partition_refinement_refine_improved"] = solved.partition_refinement_refine_improved;
+            out["partition_refinement_total_moves"] = solved.partition_refinement_total_moves;
+            out["partition_refinement_bridge_policy_calls"] = solved.partition_refinement_bridge_policy_calls;
+            out["partition_refinement_refine_windowed_calls"] = solved.partition_refinement_refine_windowed_calls;
+            out["partition_refinement_refine_unwindowed_calls"] = solved.partition_refinement_refine_unwindowed_calls;
+            out["partition_refinement_refine_overlap_segments"] = solved.partition_refinement_refine_overlap_segments;
+            out["partition_refinement_refine_calls_with_overlap"] = solved.partition_refinement_refine_calls_with_overlap;
+            out["partition_refinement_refine_calls_without_overlap"] = solved.partition_refinement_refine_calls_without_overlap;
+            out["partition_refinement_candidate_total"] = solved.partition_refinement_candidate_total;
+            out["partition_refinement_candidate_legal"] = solved.partition_refinement_candidate_legal;
+            out["partition_refinement_candidate_source_size_rejects"] = solved.partition_refinement_candidate_source_size_rejects;
+            out["partition_refinement_candidate_target_size_rejects"] = solved.partition_refinement_candidate_target_size_rejects;
+            out["partition_refinement_candidate_descent_eligible"] = solved.partition_refinement_candidate_descent_eligible;
+            out["partition_refinement_candidate_descent_rejected"] = solved.partition_refinement_candidate_descent_rejected;
+            out["partition_refinement_candidate_bridge_eligible"] = solved.partition_refinement_candidate_bridge_eligible;
+            out["partition_refinement_candidate_bridge_window_blocked"] = solved.partition_refinement_candidate_bridge_window_blocked;
+            out["partition_refinement_candidate_bridge_used_blocked"] = solved.partition_refinement_candidate_bridge_used_blocked;
+            out["partition_refinement_candidate_bridge_guide_rejected"] = solved.partition_refinement_candidate_bridge_guide_rejected;
+            out["partition_refinement_candidate_cleanup_eligible"] = solved.partition_refinement_candidate_cleanup_eligible;
+            out["partition_refinement_candidate_cleanup_primary_rejected"] = solved.partition_refinement_candidate_cleanup_primary_rejected;
+            out["partition_refinement_candidate_cleanup_complexity_rejected"] = solved.partition_refinement_candidate_cleanup_complexity_rejected;
+            out["partition_refinement_candidate_score_rejected"] = solved.partition_refinement_candidate_score_rejected;
+            out["partition_refinement_descent_moves"] = solved.partition_refinement_descent_moves;
+            out["partition_refinement_bridge_moves"] = solved.partition_refinement_bridge_moves;
+            out["partition_refinement_simplify_moves"] = solved.partition_refinement_simplify_moves;
+            out["partition_refinement_source_group_row_size_histogram"] = solved.partition_refinement_source_group_row_size_histogram;
+            out["partition_refinement_source_component_atom_size_histogram"] = solved.partition_refinement_source_component_atom_size_histogram;
+            out["partition_refinement_source_component_row_size_histogram"] = solved.partition_refinement_source_component_row_size_histogram;
+            out["partition_refinement_total_hard_gain"] = solved.partition_refinement_total_hard_gain;
+            out["partition_refinement_total_soft_gain"] = solved.partition_refinement_total_soft_gain;
+            out["partition_refinement_total_delta_j"] = solved.partition_refinement_total_delta_j;
+            out["partition_refinement_total_component_delta"] = solved.partition_refinement_total_component_delta;
+            out["partition_refinement_final_geo_wins"] = solved.partition_refinement_final_geo_wins;
+            out["partition_refinement_final_block_wins"] = solved.partition_refinement_final_block_wins;
             out["family_compare_total"] = solved.family_compare_total;
             out["family_compare_equivalent"] = solved.family_compare_equivalent;
             out["family1_both_wins"] = solved.family1_both_wins;
@@ -465,7 +467,7 @@ PYBIND11_MODULE(_libgosdt, m) {
             out["nominee_exactify_prefix_max"] = solved.nominee_exactify_prefix_max;
             out["nominee_exactify_prefix_histogram"] = solved.nominee_exactify_prefix_histogram;
             out["nominee_exact_child_eval_sec"] = solved.profiling_recursive_child_eval_sec;
-            out["nominee_debr_sec"] = solved.profiling_refine_sec;
+            out["nominee_partition_refinement_sec"] = solved.profiling_refine_sec;
             out["atomized_feature_atom_count_histogram"] = solved.atomized_feature_atom_count_histogram;
             out["atomized_feature_block_atom_count_histogram"] = solved.atomized_feature_block_atom_count_histogram;
             out["atomized_feature_q_effective_histogram"] = solved.atomized_feature_q_effective_histogram;
@@ -553,7 +555,8 @@ PYBIND11_MODULE(_libgosdt, m) {
         py::arg("min_child_size"),
         py::arg("time_limit_seconds") = 0.0,
         py::arg("max_branching") = 0,
-        py::arg("exactify_top_k") = 0);
+        py::arg("exactify_top_k") = 0,
+        py::arg("worker_limit") = 1);
 
     m.def(
         "msplit_debug_run_atomized_smoke_cases",

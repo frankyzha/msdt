@@ -58,41 +58,41 @@ struct FitResult {
     std::vector<double> heuristic_selector_improving_split_margin_max_by_depth;
     long long profiling_refine_calls = 0;
     double profiling_refine_sec = 0.0;
-    long long debr_refine_calls = 0;
-    long long debr_refine_improved = 0;
-    long long debr_total_moves = 0;
-    long long debr_bridge_policy_calls = 0;
-    long long debr_refine_windowed_calls = 0;
-    long long debr_refine_unwindowed_calls = 0;
-    long long debr_refine_overlap_segments = 0;
-    long long debr_refine_calls_with_overlap = 0;
-    long long debr_refine_calls_without_overlap = 0;
-    long long debr_candidate_total = 0;
-    long long debr_candidate_legal = 0;
-    long long debr_candidate_source_size_rejects = 0;
-    long long debr_candidate_target_size_rejects = 0;
-    long long debr_candidate_descent_eligible = 0;
-    long long debr_candidate_descent_rejected = 0;
-    long long debr_candidate_bridge_eligible = 0;
-    long long debr_candidate_bridge_window_blocked = 0;
-    long long debr_candidate_bridge_used_blocked = 0;
-    long long debr_candidate_bridge_guide_rejected = 0;
-    long long debr_candidate_cleanup_eligible = 0;
-    long long debr_candidate_cleanup_primary_rejected = 0;
-    long long debr_candidate_cleanup_complexity_rejected = 0;
-    long long debr_candidate_score_rejected = 0;
-    long long debr_descent_moves = 0;
-    long long debr_bridge_moves = 0;
-    long long debr_simplify_moves = 0;
-    std::vector<long long> debr_source_group_row_size_histogram;
-    std::vector<long long> debr_source_component_atom_size_histogram;
-    std::vector<long long> debr_source_component_row_size_histogram;
-    double debr_total_hard_gain = 0.0;
-    double debr_total_soft_gain = 0.0;
-    double debr_total_delta_j = 0.0;
-    long long debr_total_component_delta = 0;
-    long long debr_final_geo_wins = 0;
-    long long debr_final_block_wins = 0;
+    long long partition_refinement_refine_calls = 0;
+    long long partition_refinement_refine_improved = 0;
+    long long partition_refinement_total_moves = 0;
+    long long partition_refinement_bridge_policy_calls = 0;
+    long long partition_refinement_refine_windowed_calls = 0;
+    long long partition_refinement_refine_unwindowed_calls = 0;
+    long long partition_refinement_refine_overlap_segments = 0;
+    long long partition_refinement_refine_calls_with_overlap = 0;
+    long long partition_refinement_refine_calls_without_overlap = 0;
+    long long partition_refinement_candidate_total = 0;
+    long long partition_refinement_candidate_legal = 0;
+    long long partition_refinement_candidate_source_size_rejects = 0;
+    long long partition_refinement_candidate_target_size_rejects = 0;
+    long long partition_refinement_candidate_descent_eligible = 0;
+    long long partition_refinement_candidate_descent_rejected = 0;
+    long long partition_refinement_candidate_bridge_eligible = 0;
+    long long partition_refinement_candidate_bridge_window_blocked = 0;
+    long long partition_refinement_candidate_bridge_used_blocked = 0;
+    long long partition_refinement_candidate_bridge_guide_rejected = 0;
+    long long partition_refinement_candidate_cleanup_eligible = 0;
+    long long partition_refinement_candidate_cleanup_primary_rejected = 0;
+    long long partition_refinement_candidate_cleanup_complexity_rejected = 0;
+    long long partition_refinement_candidate_score_rejected = 0;
+    long long partition_refinement_descent_moves = 0;
+    long long partition_refinement_bridge_moves = 0;
+    long long partition_refinement_simplify_moves = 0;
+    std::vector<long long> partition_refinement_source_group_row_size_histogram;
+    std::vector<long long> partition_refinement_source_component_atom_size_histogram;
+    std::vector<long long> partition_refinement_source_component_row_size_histogram;
+    double partition_refinement_total_hard_gain = 0.0;
+    double partition_refinement_total_soft_gain = 0.0;
+    double partition_refinement_total_delta_j = 0.0;
+    long long partition_refinement_total_component_delta = 0;
+    long long partition_refinement_final_geo_wins = 0;
+    long long partition_refinement_final_block_wins = 0;
     long long family_compare_total = 0;
     long long family_compare_equivalent = 0;
     long long family1_both_wins = 0;
@@ -192,7 +192,8 @@ FitResult fit(
     int min_child_size,
     double time_limit_seconds,
     int max_branching,
-    int exactify_top_k
+    int exactify_top_k,
+    int worker_limit
 );
 
 nlohmann::json debug_run_atomized_smoke_cases();
