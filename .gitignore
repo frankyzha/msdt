@@ -199,6 +199,12 @@ SPLIT-ICML/split-benchmark-baseline/
 benchmark/datasets/coupon/run.log
 "$TMPDIR"/
 
+# Local LaTeX build artifacts for generated writeups
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+
 # Local CMake/Python build trees
 algorithm/msplit/build*/
 algorithm/msplit/debug-build/

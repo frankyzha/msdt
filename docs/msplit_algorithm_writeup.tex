@@ -1,0 +1,1047 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+
+\title{MSPLIT End-to-End Writeup\\[4pt]
+\large From LightGBM Binning (\texttt{max\_bin = 1024}) to Reference-Guided MSPLIT Training}
+\author{Generated from the active implementation in this repository}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Executive Overview}
+
+The repository implements a two-stage training pipeline:
+
+\begin{enumerate}
+\item Train a LightGBM teacher with \texttt{max\_bin = 1024} on the preprocessed fit split.
+\item Extract the teacher's split thresholds, logits, and boundary-strength signals.
+\item Convert each feature into an integer-binned feature.
+\item Train MSPLIT on those integer bins, using the teacher only as guidance for search, pruning, and boundary shaping.
+\end{enumerate}
+
+The important conceptual point is that \emph{LightGBM is not the final model}. It is a high-resolution, fast, expressive teacher whose job is to tell MSPLIT:
+
+\begin{itemize}
+\item where useful feature boundaries probably are,
+\item what the teacher believes at each training row,
+\item which boundaries look strong enough to preserve, and
+\item which candidate multiway splits are worth exact recursive evaluation.
+\end{itemize}
+
+MSPLIT then solves a different problem: it searches for a small, interpretable, regularized multiway tree over the integer bins. At each node it compares leaving the node as a leaf against splitting on one feature into several groups of bins. The solver mixes exact recursion near the root with a cheaper greedy completion below a lookahead horizon.
+
+\subsection{One-Sentence Summary}
+
+LightGBM gives MSPLIT a good discrete language for the data, and MSPLIT uses that language to build a smaller, more interpretable tree while borrowing the teacher only as a guide, not as the final predictor.
+
+\subsection{Why the Pipeline is Split in Two}
+
+If we tried to search directly over raw continuous thresholds, the combinatorial search would be much larger. If we only used LightGBM, we would get a high-performing boosted tree ensemble, but not the kind of sparse, explicit, human-readable tree this repository is targeting.
+
+The split pipeline gets the best of both worlds:
+
+\begin{itemize}
+\item \textbf{LightGBM stage}: quickly finds good cut points and produces rich guidance.
+\item \textbf{MSPLIT stage}: performs structured tree search in a much smaller, discrete space.
+\end{itemize}
+
+\subsection{At a Glance: Stage A vs. Stage B}
+
+\begin{center}
+\begin{tabular}{|p{0.21\linewidth}|p{0.34\linewidth}|p{0.34\linewidth}|}
+\hline
+\textbf{Aspect} & \textbf{LightGBM training} & \textbf{MSPLIT training} \\
+\hline
+Primary role & Build a strong teacher and a feature-wise discretization & Build the final interpretable tree \\
+\hline
+Input & Preprocessed continuous features & Integer bins plus teacher guidance \\
+\hline
+Main output & Bin edges, teacher logits, boundary priors & Multiway decision tree \\
+\hline
+Optimization style & Gradient boosting with histogram bins & Recursive search with shortlist pruning and exactification \\
+\hline
+What gets reused downstream & Thresholds, logits, boundary strengths & The final tree itself \\
+\hline
+\end{tabular}
+\end{center}
+
+\section{Notation}
+
+Let the training data at a node or dataset level be
+\[
+\mathcal{D} = \{(x_i, y_i)\}_{i=1}^n,
+\]
+where \(x_i \in \mathbb{R}^p\) after preprocessing and \(y_i \in \{0,1,\dots,C-1\}\).
+
+The implementation also supports sample weights \(w_i \ge 0\). In the benchmark workflow the weights are uniform and normalized so that
+\[
+\sum_{i=1}^n w_i = 1.
+\]
+
+After the LightGBM stage, each continuous feature \(x_{ij}\) is converted into an integer bin
+\[
+z_{ij} \in \{0,1,\dots,B_j-1\},
+\]
+so each row becomes a vector \(z_i\) of integers.
+
+We will use the following derived quantities often:
+
+\begin{itemize}
+\item \(W_c(S) = \sum_{i \in S, y_i = c} w_i\): empirical class weight of subset \(S\).
+\item \(T_c(S) = \sum_{i \in S} w_i p_{ic}^{(\mathrm{teacher})}\): teacher soft class weight of subset \(S\).
+\item \(R(S)\): weighted disagreement between teacher hard predictions and labels on \(S\).
+\end{itemize}
+
+For binary classification we abbreviate \(W_+(S)\), \(W_-(S)\) and \(T_+(S)\), \(T_-(S)\).
+
+\section{The End-to-End Pipeline in Practice}
+
+The benchmark cache builder in this repository follows the same high-level sequence every time:
+
+\begin{enumerate}
+\item Load a named dataset.
+\item Encode labels numerically.
+\item Split rows into fit, validation, and test subsets.
+\item Fit the preprocessing pipeline on the fit split.
+\item Transform fit, validation, and test into dense numeric arrays.
+\item Fit the LightGBM binner on the fit split, with validation for early stopping.
+\item Produce integer-binned matrices \(Z_{\mathrm{fit}}, Z_{\mathrm{val}}, Z_{\mathrm{test}}\).
+\item Save teacher logits and teacher boundary tensors.
+\item Fit MSPLIT on \(Z_{\mathrm{fit}}\), \(y_{\mathrm{fit}}\), and the saved teacher guidance.
+\item Evaluate the resulting tree on the cached validation and test bins.
+\end{enumerate}
+
+The repository's maintained benchmark path uses exactly this idea: first build or reuse the LightGBM cache, then call the native MSPLIT solver on the cached integer bins.
+
+\section{Part I: LightGBM Training with \texttt{max\_bin = 1024}}
+
+\subsection{Goal of the LightGBM Stage}
+
+The LightGBM stage has three jobs:
+
+\begin{enumerate}
+\item discretize each feature into an ordered set of bins,
+\item produce per-row teacher logits or class probabilities,
+\item produce per-boundary signals telling MSPLIT which feature boundaries look important.
+\end{enumerate}
+
+This stage is a \emph{teacher-construction and representation-construction step}. It is not the final model selection step.
+
+\subsection{Dataset Split and Preprocessing}
+
+Before LightGBM is trained, the pipeline creates fit, validation, and test splits. The default cache builder uses:
+
+\begin{itemize}
+\item test size \(= 0.2\),
+\item validation size \(= 0.1\),
+\item fit size \(= 0.7\).
+\end{itemize}
+
+The fit split is used to fit the preprocessing pipeline. Validation and test are transformed using the same fitted preprocessor.
+
+So LightGBM does \emph{not} see raw repository datasets directly. It sees preprocessed numeric features. That matters because the extracted bin boundaries are boundaries in the preprocessed feature space.
+
+\subsection{Training the Teacher}
+
+The binner fits a LightGBM classifier with \texttt{max\_bin = 1024}. Conceptually:
+\[
+\texttt{teacher} = \mathrm{LightGBM}(X_{\mathrm{fit}}, y_{\mathrm{fit}}; \texttt{max\_bin}=1024).
+\]
+
+In the default benchmark cache settings, the teacher also uses:
+
+\begin{itemize}
+\item many boosting rounds with early stopping,
+\item large enough leaves to provide a sharp teacher,
+\item teacher logit collection enabled,
+\item CPU mode by default, with GPU support available in the helper.
+\end{itemize}
+
+The code also supports multiple teacher runs:
+\[
+f^{(\mathrm{teacher})}(x) = \frac{1}{M} \sum_{m=1}^M f_m(x).
+\]
+When \(M > 1\), the threshold extraction and the raw margins are aggregated across runs. In that sense the repository can use a small \emph{reference ensemble}, even though many benchmark runs use \(M = 1\).
+
+\subsection{Extracting Split Thresholds}
+
+After fitting the teacher, the implementation dumps the LightGBM trees and walks every internal split. For each feature \(j\), it collects thresholds \(\tau\) together with their accumulated split gain:
+\[
+\mathrm{Score}_j(\tau) = \sum_{\text{teacher splits on feature } j \text{ at } \tau} \max(\mathrm{split\_gain}, 10^{-12}).
+\]
+
+Then it keeps the highest-scoring thresholds for each feature, sorted back into increasing order. Because \texttt{max\_bin = 1024}, the number of edges per feature is capped at
+\[
+\texttt{max\_edges} = 1024 - 1 = 1023.
+\]
+
+If a feature receives no usable teacher thresholds, the implementation falls back to quantile edges. This is important: the pipeline is robust even when the teacher barely uses a feature.
+
+\subsection{From Thresholds to Integer Bins}
+
+If feature \(j\) ends up with ordered edges
+\[
+E_j = (e_{j1}, e_{j2}, \dots, e_{j,K_j}),
+\]
+then the integer bin is
+\[
+z_{ij} = \operatorname{digitize}(x_{ij}; E_j).
+\]
+
+Equivalently, in scalar form:
+\[
+z_{ij} = \sum_{k=1}^{K_j} \mathbf{1}\{x_{ij} \ge e_{jk}\},
+\]
+with bins numbered from \(0\) through \(K_j\).
+
+So each feature becomes a small ordered alphabet. MSPLIT never searches raw floating-point thresholds directly; it only searches groupings of these integer bins.
+
+\subsection{Teacher Logits}
+
+The binner also stores the teacher's raw margin for every fit row. For binary classification:
+\[
+\ell_i = f^{(\mathrm{teacher})}(x_i), \qquad
+p_i = \sigma(\ell_i) = \frac{1}{1 + e^{-\ell_i}}.
+\]
+
+For multiclass classification, the teacher yields a vector of logits and the probabilities come from softmax:
+\[
+p_{ic} = \frac{e^{\ell_{ic}}}{\sum_{r=1}^{C} e^{\ell_{ir}}}.
+\]
+
+MSPLIT uses these teacher probabilities later to compute \emph{soft impurity} and soft class totals. This is a key design choice: a bin assignment is not evaluated only by the ground-truth labels, but also by whether it respects the teacher's soft structure.
+
+\subsection{Teacher Boundary Priors}
+
+Beyond per-row logits, the LightGBM stage computes three per-feature, per-boundary signals:
+
+\begin{itemize}
+\item \textbf{Boundary gain}: how much split gain the teacher accumulated at that boundary.
+\item \textbf{Boundary cover}: how many samples the teacher split there.
+\item \textbf{Boundary value jump}: how different the left and right subtree leaf values were.
+\end{itemize}
+
+For a boundary \(b\) on feature \(j\), you can think of these as:
+\[
+G_{jb}, \qquad C_{jb}, \qquad V_{jb}.
+\]
+
+The solver normalizes them using \(\log(1+\cdot)\), rescales each channel by its feature-wise maximum, and averages the three normalized channels:
+\[
+S_{jb}
+=
+\frac{1}{3}
+\left(
+\frac{\log(1+G_{jb})}{\max_u \log(1+G_{ju})}
++
+\frac{\log(1+C_{jb})}{\max_u \log(1+C_{ju})}
++
+\frac{\log(1+V_{jb})}{\max_u \log(1+V_{ju})}
+\right).
+\]
+
+The solver then stores prefix sums of these strengths so it can answer queries of the form:
+\[
+\mathrm{BoundaryStrength}(j, a, b)
+=
+\sum_{u=a}^{b-1} S_{ju}.
+\]
+
+Intuition: if the teacher repeatedly splits at a boundary, does so on many rows, and creates a large predictive jump there, MSPLIT should be reluctant to create a noncontiguous grouping that leaps across that boundary.
+
+\subsection{LightGBM Example}
+
+Suppose one preprocessed feature is ``age-like'' and the teacher finds strong thresholds at \(10\), \(20\), and \(35\). Then
+\[
+E = (10, 20, 35),
+\]
+which induces four bins:
+\[
+(-\infty,10),\ [10,20),\ [20,35),\ [35,\infty).
+\]
+
+If a row has feature value \(24\), its integer bin is \(2\). If another row has value \(7\), its bin is \(0\).
+
+Now imagine the teacher strongly prefers the boundary at \(20\). MSPLIT will still be allowed to group bins on either side of that boundary together, but doing so will face a stronger boundary penalty and stronger competition from candidates that preserve the teacher's structure there.
+
+\subsection{What the LightGBM Stage Hands to MSPLIT}
+
+At the end of the first stage, MSPLIT receives:
+
+\begin{itemize}
+\item \(Z\): integer bins for each row and feature,
+\item teacher logits or probabilities,
+\item teacher boundary gain,
+\item teacher boundary cover,
+\item teacher boundary value jump.
+\end{itemize}
+
+This is the bridge between the two stages. Once these artifacts exist, the second stage is a discrete structured search problem.
+
+\section{Part II: MSPLIT Training}
+
+\subsection{What MSPLIT is Solving}
+
+MSPLIT searches for a regularized tree over integer bins. Each internal node chooses:
+
+\begin{itemize}
+\item one feature \(j\),
+\item a number of groups \(g \ge 2\),
+\item an assignment of that feature's occupied bins into \(g\) groups,
+\item one child subtree per group.
+\end{itemize}
+
+The implementation allows groups to be unions of ordered spans:
+\[
+S_{j,r} = \bigcup_{m=1}^{M_r} [a_{rm}, b_{rm}],
+\]
+where each \(S_{j,r}\) is the set of bin ids routed to child \(r\).
+
+If \(M_r > 1\), the group is noncontiguous. This is one of the major differences from a standard binary threshold tree: MSPLIT can represent patterns such as ``low or high values go left, middle values go right''.
+
+\subsection{Leaf Objective}
+
+At any node, MSPLIT compares splitting against staying as a leaf.
+
+For a subset \(S\), the empirical leaf loss is the weighted misclassification of predicting the majority class in that subset:
+
+\paragraph{Binary case.}
+\[
+L_{\mathrm{leaf}}(S) = \min\{W_+(S), W_-(S)\}.
+\]
+
+\paragraph{Multiclass case.}
+\[
+L_{\mathrm{leaf}}(S) = \sum_{c=1}^C W_c(S) - \max_{c} W_c(S).
+\]
+
+The solver adds a regularization term \(\lambda\) per leaf:
+\[
+\mathrm{LeafObjective}(S) = L_{\mathrm{leaf}}(S) + \lambda.
+\]
+
+So the total tree objective is
+\[
+\mathrm{Obj}(T)
+=
+\sum_{\ell \in \mathrm{Leaves}(T)}
+\left(
+L_{\mathrm{leaf}}(\ell) + \lambda
+\right).
+\]
+
+This means every extra leaf must earn its keep. A split is only worthwhile if the reduction in weighted error is large enough to pay for the added leaf regularization.
+
+\subsection{Impurity Used Inside Candidate Search}
+
+MSPLIT uses impurity-style scores to generate strong candidate splits.
+
+For binary class weights \((a,b)\):
+\[
+I(a,b) = (a+b) - \frac{a^2 + b^2}{a+b}.
+\]
+
+For multiclass weights \((u_1,\dots,u_C)\):
+\[
+I(u_1,\dots,u_C)
+=
+\sum_{c=1}^C u_c
+-
+\frac{\sum_{c=1}^C u_c^2}{\sum_{c=1}^C u_c}.
+\]
+
+This is essentially weighted Gini times the node weight. The code uses the same formula on:
+
+\begin{itemize}
+\item \textbf{hard weights}: true label counts,
+\item \textbf{soft teacher weights}: teacher probability mass.
+\end{itemize}
+
+\subsection{Hard vs. Soft Quantities}
+
+For any candidate grouping, the solver tracks both empirical and teacher-based summaries:
+
+\begin{itemize}
+\item \textbf{Hard loss}: misclassification computed from true labels.
+\item \textbf{Soft loss}: the same formula but using teacher probability mass.
+\item \textbf{Hard impurity}: impurity on empirical labels.
+\item \textbf{Soft impurity}: impurity on teacher probabilities.
+\end{itemize}
+
+This matters because two candidate splits can have similar hard error but very different teacher consistency.
+
+\paragraph{Why soft impurity helps intuition.}
+Suppose two bins both predict class \(1\) under the hard majority rule. If the teacher is \(0.51\) positive in one bin and \(0.99\) positive in the other, the teacher is telling us those bins are not equally similar. Soft impurity preserves that distinction.
+
+\subsection{Multiway Split Semantics}
+
+At a node, MSPLIT does not necessarily ask ``what is the best threshold?'' It asks:
+
+\begin{quote}
+``For this feature's occupied bins, how should we partition the bins into a small number of groups so that each child becomes easier to classify?''
+\end{quote}
+
+That is a more flexible question. A threshold tree can only create contiguous left/right partitions. MSPLIT can create:
+
+\begin{itemize}
+\item contiguous multiway segments,
+\item or, when it helps enough, noncontiguous unions of spans.
+\end{itemize}
+
+\section{How a Single MSPLIT Node is Solved}
+
+\subsection{Step 1: Compute Node Statistics}
+
+For the current subset \(S\), the solver computes:
+
+\begin{itemize}
+\item empirical class weights,
+\item whether the node is pure,
+\item leaf objective,
+\item teacher disagreement weight
+\[
+R(S) = \sum_{i \in S} w_i \mathbf{1}\{\hat{y}^{(\mathrm{teacher})}_i \ne y_i\},
+\]
+\item weight totals used for complexity scaling.
+\end{itemize}
+
+If the node is pure, too small, or depth-limited, the solver stops immediately and returns a leaf.
+
+\subsection{Step 2: Build Ordered Occupied Bins}
+
+For each feature \(j\), the node only cares about bins that are actually occupied inside the node. If feature \(j\) globally has many possible bins but only a few appear in this subset, the local search only uses the occupied ones.
+
+This is a major computational win. Near the leaves, the effective feature alphabet is often much smaller than the global \texttt{max\_bin} budget.
+
+\subsection{Step 3: Build Atoms}
+
+An \textbf{atom} is the smallest local unit of feature structure at the node: typically one occupied bin, with both empirical and teacher summaries attached.
+
+For atom \(a\), MSPLIT stores quantities like:
+
+\begin{itemize}
+\item row count,
+\item empirical class weights,
+\item teacher class weights,
+\item empirical majority label,
+\item teacher majority label.
+\end{itemize}
+
+So each atom already knows both ``what the data says'' and ``what the teacher says''.
+
+\subsection{Atomic Example}
+
+Suppose a feature has occupied bins \(0,1,2,3\), and at the current node the rows look like:
+
+\begin{center}
+\begin{tabular}{|c|c|c|}
+\hline
+Bin & True majority & Teacher majority \\
+\hline
+0 & 0 & 0 \\
+1 & 0 & 0 \\
+2 & 1 & 1 \\
+3 & 1 & 1 \\
+\hline
+\end{tabular}
+\end{center}
+
+Then bins \(0\) and \(1\) are very compatible, and bins \(2\) and \(3\) are very compatible. A good split probably preserves that local structure.
+
+\subsection{Step 4: Optional Atom Compression into Blocks}
+
+The active implementation can compress adjacent atoms into larger \textbf{blocks}. Under the default rule, two neighboring atoms are merged if they have:
+
+\begin{itemize}
+\item the same empirical prediction, and
+\item the same teacher prediction.
+\end{itemize}
+
+Intuition: if both the labels and the teacher agree that two neighboring bins behave the same way, there is little value in treating them as separate units during early candidate generation.
+
+This gives a coarse representation that is faster to search.
+
+\subsection{Compression Example}
+
+Suppose bins \(0,1,2,3,4,5\) have:
+
+\begin{center}
+\begin{tabular}{|c|c|c|}
+\hline
+Bin & Empirical prediction & Teacher prediction \\
+\hline
+0 & 0 & 0 \\
+1 & 0 & 0 \\
+2 & 0 & 0 \\
+3 & 1 & 1 \\
+4 & 1 & 1 \\
+5 & 1 & 1 \\
+\hline
+\end{tabular}
+\end{center}
+
+Then the search can safely start from two blocks:
+\[
+\{0,1,2\}, \qquad \{3,4,5\}.
+\]
+
+This does \emph{not} mean the final split is forced to keep exactly those blocks. It means the initial coarse search starts there and later lifts back to atom-level refinement.
+
+\subsection{Step 5: Generate Two Candidate Families}
+
+For each feature and for each arity \(g\) (number of groups), the solver generates two family nominees:
+
+\begin{enumerate}
+\item an \textbf{impurity family} candidate,
+\item a \textbf{hard-loss family} candidate.
+\end{enumerate}
+
+These are not redundant. The impurity family tries to produce children that are internally pure and teacher-consistent. The hard-loss family aims more directly at classification error.
+
+The active solver explicitly compares them and may keep one or both.
+
+\subsection{Candidate Scores}
+
+For a candidate grouping, the solver aggregates:
+
+\begin{itemize}
+\item hard loss,
+\item soft loss,
+\item hard impurity,
+\item soft impurity,
+\item boundary penalty,
+\item number of connected components across groups.
+\end{itemize}
+
+For impurity-mode candidate generation, the primary objective is
+\[
+J_{\mathrm{imp}} = I_{\mathrm{hard}} + I_{\mathrm{soft}}.
+\]
+
+For hard-loss mode, the primary objective is
+\[
+J_{\mathrm{hard}} = L_{\mathrm{hard}}.
+\]
+
+The cheap shortlist proxy then adds a complexity term:
+\[
+\widetilde{J}
+=
+J_{\mathrm{primary}}
++
+\mu_{\mathrm{node}}
+\left(
+\mathrm{BoundaryPenalty}
++
+\mathrm{Components}
+\right).
+\]
+
+The scaling factor is
+\[
+\mu_{\mathrm{node}}
+=
+\frac{1}{n_{\mathrm{eff}}},
+\qquad
+n_{\mathrm{eff}}
+=
+\frac{(\sum_i w_i)^2}{\sum_i w_i^2},
+\]
+with the uniform-weight case reducing to roughly \(1 / |S|\).
+
+\paragraph{Intuition.}
+Large nodes get a smaller complexity multiplier, so the solver is willing to tolerate more structural complexity near the root. Small nodes get a larger multiplier, so extra disconnected pieces become more expensive deeper in the tree.
+
+\subsection{Boundary Penalty}
+
+If one group contains atoms that are separated by a gap, the candidate pays a noncontiguous boundary penalty:
+\[
+\mathrm{PenaltyGap}
+=
+\frac{
+\mathrm{BoundaryStrength}(j, z_{\mathrm{left}}, z_{\mathrm{right}})
+}{
+z_{\mathrm{right}} - z_{\mathrm{left}}
+}.
+\]
+
+So if a group jumps across a strong teacher boundary, that jump costs more than jumping across a weak boundary.
+
+\paragraph{Interpretation.}
+The teacher is saying: ``I think something real happens here.'' MSPLIT is still allowed to ignore that advice, but it must justify doing so by enough gains elsewhere.
+
+\subsection{Step 6: Compare the Two Families}
+
+The solver does not blindly keep both impurity and hard-loss candidates. It compares them:
+
+\begin{itemize}
+\item if they are effectively equivalent, keep one;
+\item if one dominates, keep the winner;
+\item if they disagree in a meaningful way, keep both.
+\end{itemize}
+
+This is useful because hard loss and impurity can disagree, especially when the node is small or when the teacher sees structure not yet visible in hard majority counts.
+
+\subsection{Step 7: Teacher-Guided Pair Pruning}
+
+Once feature-arity pairs have been generated cheaply, the solver uses a teacher-guided baseline:
+\[
+F_{\mathrm{ref}}(g) = R(S) + \lambda g.
+\]
+
+Here \(R(S)\) is the node-level weighted disagreement between teacher hard predictions and true labels, and \(g\) is the candidate's number of groups. In the implementation this acts as a \emph{reference floor-like pruning score} for shortlist management.
+
+Pairs with poor reference behavior relative to the current search upper bound are discarded early.
+
+Above the lookahead horizon, the solver keeps only a prefix of the surviving pairs:
+
+\[
+\text{pair budget}
+=
+\begin{cases}
+\min(K, N), & \text{if exactify\_top\_k} = K > 0, \\
+\lceil \sqrt{N} \rceil, & \text{otherwise}.
+\end{cases}
+\]
+
+This is one of the key ideas of the algorithm: many pairs are scored cheaply, very few are allowed to trigger expensive recursive evaluation.
+
+\subsection{Step 8: Materialize Nominees}
+
+For each shortlisted nominee, the solver expands the feature assignment into actual child subsets:
+
+\begin{itemize}
+\item which rows go to child 1,
+\item which rows go to child 2,
+\item and so on.
+\end{itemize}
+
+At this point the solver knows the exact row set of every child. Now it can compute child statistics and stronger bounds.
+
+\subsection{Step 9: Exact Lower Bounds via Canonical Signatures}
+
+Once a candidate's children are known, the solver can compute a real structural lower bound using \emph{canonical signature blocks}. The idea is simple:
+
+\begin{quote}
+If two rows are identical in the current binned feature representation, no future subtree can ever separate them.
+\end{quote}
+
+So for each child, rows are grouped by identical full bin-signatures across all features. For each such signature block, the solver adds the minimum possible leaf loss inside that block. Summing those block losses gives a valid lower bound.
+
+\paragraph{Binary intuition.}
+If a signature block contains one positive row and one negative row, then no descendant split can separate them, because they are identical on every remaining feature. That block contributes at least one weighted mistake.
+
+Formally, if \(\mathcal{B}\) is the set of signature blocks,
+\[
+\mathrm{SignatureBound}(S)
+=
+\lambda + \sum_{B \in \mathcal{B}} \min\{W_+(B), W_-(B)\}
+\]
+in the binary case, with the multiclass analogue replacing the binary leaf loss by the multiclass majority-vote error.
+
+\subsection{Step 10: Exactify Only a Prefix}
+
+Above the lookahead horizon, the solver exactifies only a shortlist prefix. It also preserves strong anchors:
+
+\begin{itemize}
+\item the best impurity-side nominee,
+\item the best hard-loss-side nominee.
+\end{itemize}
+
+So even if the shortlist cap is \(K\), the realized exactification prefix can be larger than \(K\) if those anchors differ.
+
+This is a subtle but important design choice: the solver saves work without collapsing too aggressively onto a single scoring philosophy.
+
+\subsection{Step 11: Recursive Solve or Greedy Completion}
+
+When a nominee is exactified, each child is solved recursively.
+
+\begin{itemize}
+\item \textbf{Above lookahead depth}: recurse in exact mode, again with shortlist generation and pruning.
+\item \textbf{At or below lookahead depth}: switch to a cheaper greedy completion strategy.
+\end{itemize}
+
+The default effective lookahead depth is roughly half the full depth budget:
+\[
+d_{\mathrm{lookahead}}
+=
+\max\left(1, \left\lfloor \frac{D+1}{2} \right\rfloor\right).
+\]
+
+This means the top of the tree gets most of the expensive search budget, which is where global structural decisions matter most.
+
+\subsection{Step 12: Keep the Split Only if It Beats the Leaf}
+
+Even after all that work, a split is not automatically accepted. The solver compares the best split found to the plain leaf objective at the current node:
+
+\[
+\text{accept split if } \mathrm{BestSplitObjective} < \mathrm{LeafObjective}(S).
+\]
+
+If not, the node stays a leaf.
+
+This final check is conceptually important. Candidate generation may suggest many plausible partitions, but the solver only commits to one if the full downstream objective really improves.
+
+\section{Local Partition Refinement (LPR)}
+
+\subsection{What This Part Does}
+
+The active nonlinear solver uses a local refinement routine, which we call \emph{Local Partition Refinement (LPR)} and implement in \texttt{refine\_atomized\_candidate\_partition\_locally}.
+
+Its job is:
+
+\begin{quote}
+Start from a reasonable coarse grouping of bins, then improve it by moving contiguous blocks of adjacent occupied bins from one group to another.
+\end{quote}
+
+This is where the search becomes intuitive: instead of rebuilding a split from scratch, the algorithm asks whether specific pieces of the current grouping should be reassigned.
+
+\subsection{Why Reassignment is Helpful}
+
+The coarse seed candidate is fast to compute, but it may not be locally optimal. Maybe:
+
+\begin{itemize}
+\item one small component clearly belongs to another group,
+\item a noncontiguous detour should be removed,
+\item or a tie should be broken in the teacher's favor.
+\end{itemize}
+
+Local reassignment lets the solver fix those issues cheaply.
+
+\subsection{The Three Types of Refinement Moves}
+
+The implementation effectively reasons about three kinds of moves.
+
+\paragraph{1. Descent moves.}
+These strictly improve the primary objective of the current mode.
+
+If the current mode is impurity mode, the primary gain is the drop in
+\[
+I_{\mathrm{hard}} + I_{\mathrm{soft}}.
+\]
+If the current mode is hard-loss mode, the primary gain is the drop in
+\[
+L_{\mathrm{hard}}.
+\]
+
+\paragraph{2. Bridge moves.}
+These are near-zero-primary-gain moves that still improve the guide objective enough to help the search escape a plateau. The implementation is careful with these and only allows limited usage.
+
+\paragraph{3. Cleanup moves.}
+These keep the primary objective unchanged but reduce structural complexity, especially the number of disconnected components. They are how the solver simplifies awkward groupings after the main score has stabilized.
+
+\subsection{The Local Move Score}
+
+For a proposed local reassignment move, the implementation tracks a score of the form
+\[
+\Delta J = \Delta_{\mathrm{primary}} - \mu_{\mathrm{node}} \, \Delta_{\mathrm{components}}.
+\]
+
+Here:
+
+\begin{itemize}
+\item \(\Delta_{\mathrm{primary}}\) is the improvement in the active primary objective,
+\item \(\Delta_{\mathrm{components}}\) is the change in the number of connected pieces.
+\end{itemize}
+
+So a move that decreases the number of components is rewarded, and a move that fragments a group into more pieces is penalized.
+
+\subsection{Intuition for Components}
+
+If one group is \(\{0,1,2,7,8\}\), it has two connected components:
+\[
+\{0,1,2\}, \qquad \{7,8\}.
+\]
+
+Groups with many disconnected pieces are harder to explain to humans and more likely to be overfitting strange local behavior. LPR pushes the solution back toward simpler groupings unless the primary objective strongly justifies the extra fragmentation.
+
+\subsection{Simple Reassignment Example}
+
+Suppose a feature currently has group assignment
+\[
+G_1 = \{0,1,4\}, \qquad G_2 = \{2,3\}.
+\]
+
+Then \(G_1\) has two connected components: \(\{0,1\}\) and \(\{4\}\).
+
+If moving bin \(4\) from \(G_1\) to \(G_2\) leaves the classification loss unchanged, then the new grouping
+\[
+G_1' = \{0,1\}, \qquad G_2' = \{2,3,4\}
+\]
+has fewer total components. A cleanup move should prefer the new grouping because it is equally predictive but structurally cleaner.
+
+\subsection{More Intuitive Example: Descent vs. Bridge vs. Cleanup}
+
+Imagine the current grouping is
+\[
+G_1 = \{0,1,2\}, \qquad G_2 = \{3,4,5\},
+\]
+but bin \(2\) behaves much more like bins \(3\) and \(4\) than like bins \(0\) and \(1\).
+
+\begin{itemize}
+\item If moving bin \(2\) from \(G_1\) to \(G_2\) lowers the main objective, that is a \textbf{descent move}.
+\item If the main objective stays flat but the teacher-consistency score improves, that is a \textbf{bridge move}.
+\item If the main objective stays flat and the real gain is that the grouping becomes more contiguous, that is a \textbf{cleanup move}.
+\end{itemize}
+
+This is a very useful way to read the algorithm: it is not just searching for the best split, it is also editing candidate splits into cleaner versions of themselves.
+
+\subsection{Block Space First, Atom Space Second}
+
+The active implementation often follows this pattern:
+
+\begin{enumerate}
+\item build a coarse candidate in compressed block space,
+\item refine it in block space,
+\item lift it back to atom space,
+\item refine it again in atom space.
+\end{enumerate}
+
+This is a smart compromise. Coarse search is cheaper, while atom-level refinement recovers fine details if they matter.
+
+\section{Reference Guidance and ``Reference Ensemble Pruning''}
+
+\subsection{What ``Reference Ensemble'' Means Here}
+
+The user-facing intuition is that the first stage may provide a \emph{reference teacher}, possibly from one LightGBM model or a small average of several teacher runs. MSPLIT never tries to become that ensemble. Instead, it uses the ensemble's outputs as guidance.
+
+There are three main ways this guidance enters:
+
+\begin{enumerate}
+\item through teacher probabilities in soft impurity,
+\item through teacher disagreement in reference pruning,
+\item through teacher-derived boundary strengths in noncontiguous penalties.
+\end{enumerate}
+
+\subsection{Soft Teacher Structure}
+
+Teacher probabilities create soft class totals:
+\[
+T_c(S) = \sum_{i \in S} w_i p_{ic}^{(\mathrm{teacher})}.
+\]
+
+Those totals feed the soft impurity and soft loss calculations. So candidates are rewarded when they not only fit the true labels but also organize the data in a way that the teacher sees as internally coherent.
+
+\subsection{Reference-Floor Pruning}
+
+The solver's shortlist logic uses the teacher disagreement baseline
+\[
+F_{\mathrm{ref}}(g) = R(S) + \lambda g
+\]
+to rank and prune candidate pairs and nominee candidates.
+
+The right intuition is:
+
+\begin{quote}
+If the teacher is already making only a small amount of error on this node, then a candidate split had better justify its extra groups and leaves. If it cannot compete even against a teacher-guided baseline, it should not consume expensive exact recursive search.
+\end{quote}
+
+\subsection{Boundary-Aware Pruning}
+
+Teacher-derived boundary strengths make it expensive to create unnatural noncontiguous groups that jump across strong boundaries. This has a pruning effect even before recursion, because awkward candidates receive worse cheap proxy scores and are less likely to survive into the exactification prefix.
+
+\subsection{Why This is Powerful}
+
+Without teacher guidance, MSPLIT would still be a discrete tree searcher, but it would need to treat many more candidate splits as plausible. Teacher guidance turns the search from:
+
+\begin{quote}
+``Which of these thousands of feature-group assignments might be good?''
+\end{quote}
+
+into
+
+\begin{quote}
+``Which of these teacher-compatible assignments are worth exact evaluation, and when is it worth deviating from the teacher?''
+\end{quote}
+
+\section{A Worked End-to-End Example}
+
+\subsection{Tiny One-Feature Example}
+
+Consider one preprocessed feature with values:
+\[
+2,\ 4,\ 8,\ 11,\ 14,\ 17,\ 22,\ 29
+\]
+and binary labels:
+\[
+0,\ 0,\ 0,\ 1,\ 1,\ 1,\ 0,\ 0.
+\]
+
+\subsection{Stage A: LightGBM Binning}
+
+Suppose the teacher extracts thresholds near \(10\) and \(20\). Then the feature becomes three bins:
+
+\begin{itemize}
+\item bin \(0\): values \(< 10\),
+\item bin \(1\): values in \([10,20)\),
+\item bin \(2\): values \(\ge 20\).
+\end{itemize}
+
+The binned labels are now approximately:
+
+\begin{center}
+\begin{tabular}{|c|c|}
+\hline
+Bin & Labels inside bin \\
+\hline
+0 & \(0,0,0\) \\
+1 & \(1,1,1\) \\
+2 & \(0,0\) \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Why This is a Good Example}
+
+The pattern is ``low is 0, middle is 1, high is 0''. A plain binary threshold split cannot express that in one node. A multiway split can.
+
+\subsection{Stage B: MSPLIT Search}
+
+MSPLIT now has a few obvious options:
+
+\begin{enumerate}
+\item keep a single leaf,
+\item make a 2-group split like \(\{0,1\}\) vs. \(\{2\}\),
+\item make a 2-group noncontiguous split like \(\{0,2\}\) vs. \(\{1\}\),
+\item make a 3-group split \(\{0\}\), \(\{1\}\), \(\{2\}\).
+\end{enumerate}
+
+If the teacher strongly believes the boundaries at both \(10\) and \(20\) are real, then the noncontiguous option \(\{0,2\}\) vs. \(\{1\}\) gets penalized for leaping across a strong middle region. The 3-way split may therefore win, even though the noncontiguous 2-group split is expressive.
+
+\subsection{What the Example Teaches}
+
+This tiny example captures the entire philosophy:
+
+\begin{itemize}
+\item LightGBM converts the feature into a small ordered alphabet.
+\item MSPLIT searches over groupings of that alphabet.
+\item Teacher guidance tells the search which groupings look natural.
+\item Regularization decides whether the extra groups are worth paying for.
+\end{itemize}
+
+\subsection{Canonical Signature Lower-Bound Example}
+
+Now suppose inside one candidate child there are two rows that have the exact same full binned vector across \emph{all} features, but opposite labels.
+
+Then no descendant subtree can ever separate them. No matter what future splits are chosen, at least one of those rows must be misclassified. That unavoidable error becomes part of the child's signature lower bound.
+
+This is why exactification can prune candidates before finishing full recursion: some candidates are already doomed by identical-feature collisions.
+
+\section{How to Read the Full Algorithm Intuitively}
+
+\subsection{The Most Useful Mental Model}
+
+The easiest mental model is:
+
+\begin{enumerate}
+\item LightGBM says where the data likely bends.
+\item MSPLIT turns those bends into discrete bins.
+\item For each node, MSPLIT tries a small number of ways to group those bins.
+\item It refines awkward groupings by moving contiguous pieces around.
+\item It uses the teacher to avoid wasting time on implausible candidates.
+\item It only commits to a split if the full downstream objective beats a leaf.
+\end{enumerate}
+
+\subsection{Why the Algorithm Can Stay Fast}
+
+The solver stays practical because it does \emph{not} exactify every possible split.
+
+It relies on:
+
+\begin{itemize}
+\item binning to shrink the search space,
+\item atom compression to coarsen local structure,
+\item impurity and hard-loss families to propose strong seeds,
+\item teacher-based shortlist pruning,
+\item canonical-signature lower bounds,
+\item greedy completion below the lookahead horizon.
+\end{itemize}
+
+All of these pieces are necessary. Remove one, and the search either becomes more expensive or less selective.
+
+\subsection{Why the Algorithm Can Stay Interpretable}
+
+The final model is still a tree whose nodes say things like:
+
+\begin{quote}
+``Look at feature \(j\). If its bin is in this set of spans, go to child 1; otherwise, if it is in that set of spans, go to child 2.''
+\end{quote}
+
+That is much more interpretable than a large boosted ensemble, while still being more expressive than a pure binary-threshold tree.
+
+\section{Inference}
+
+At prediction time, the full pipeline is:
+
+\begin{enumerate}
+\item preprocess the raw features using the cached preprocessor,
+\item digitize each feature with the cached LightGBM edges,
+\item traverse the MSPLIT tree using bin membership in the node's group spans.
+\end{enumerate}
+
+If a bin does not match a stored span exactly at a node, the implementation falls back to the nearest group or a fallback prediction. This makes the tree robust to sparse local training support.
+
+\section{Practical Takeaways}
+
+\subsection{What Each Major Mechanism is Really For}
+
+\begin{center}
+\begin{tabular}{|p{0.28\linewidth}|p{0.6\linewidth}|}
+\hline
+\textbf{Mechanism} & \textbf{Practical purpose} \\
+\hline
+LightGBM thresholds & Reduce continuous search to an ordered discrete search \\
+\hline
+Teacher logits & Provide soft structure beyond hard labels \\
+\hline
+Boundary priors & Discourage unnatural noncontiguous jumps across strong teacher boundaries \\
+\hline
+Atoms and blocks & Make local search cheaper and more structured \\
+\hline
+Impurity family & Finds partitions that create pure, teacher-consistent children \\
+\hline
+Hard-loss family & Finds partitions that directly reduce classification error \\
+\hline
+LPR & Repairs and simplifies seed candidates \\
+\hline
+Reference pruning & Prevents expensive recursion on weak candidates \\
+\hline
+Signature bounds & Give exact lower bounds once child subsets are known \\
+\hline
+Lookahead horizon & Concentrates expensive exact search near the root \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{If You Remember Only Five Things}
+
+\begin{enumerate}
+\item LightGBM provides the bins, not the final tree.
+\item MSPLIT searches over \emph{groupings of bins}, not raw thresholds.
+\item The solver tracks both hard label structure and soft teacher structure.
+\item Block reassignment is a local editing step that makes candidates better and simpler.
+\item Exact search is used selectively; pruning and bounds are what make the whole approach practical.
+\end{enumerate}
+
+\section{Conclusion}
+
+The algorithm in this repository is easiest to understand as a division of labor.
+
+LightGBM is the fast continuous explorer. It tells us where useful feature boundaries are, what a strong teacher believes, and which boundaries are worth respecting. MSPLIT is the discrete tree architect. It takes those high-resolution hints and searches for a smaller, regularized, human-readable multiway tree.
+
+The sophisticated pieces such as atom compression, dual candidate families, LPR, reference-guided pruning, and signature-based lower bounds are not independent tricks. They are all different ways of answering the same question:
+
+\begin{quote}
+How do we keep only the expensive recursive search that is likely to matter?
+\end{quote}
+
+That is why the pipeline works end-to-end. The first stage makes the second stage possible, and the second stage turns the first stage's rich guidance into an interpretable final model.
+
+\end{document}
