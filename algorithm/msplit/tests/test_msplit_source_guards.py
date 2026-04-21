@@ -85,12 +85,14 @@ def test_current_sources_have_no_legacy_selector_or_path_lp_helpers():
 def test_current_solver_uses_single_active_selector_source():
     root = _source_root()
     core_text = _current_solver_source_text()["core"]
+    heuristic_text = _current_solver_source_text()["heuristic"]
     nonlinear_text = _current_solver_source_text()["selector"]
     init_text = (Path(__file__).resolve().parents[1] / "src" / "split" / "__init__.py").read_text(encoding="utf-8")
 
     assert '#include "msplit_nonlinear.cpp"' in core_text
     assert '#include "msplit_atomized.cpp"' in nonlinear_text
     assert "MSPLIT_USE_BACKUP_SELECTOR" not in core_text
+    assert "current_depth == effective_lookahead_depth_" not in heuristic_text
     assert (root / "msplit_linear.cpp").exists()
     assert not (root / "msplit_exact_lazy.cpp").exists()
     assert "MSPLIT_RUSHDP" not in init_text
@@ -123,8 +125,9 @@ def test_dataset_uses_compact_reverse_feature_lookup():
 def test_signature_summary_groups_rows_without_string_row_copies():
     core = _current_solver_source_text()["core"]
 
-    assert "std::unordered_map<const int *, CanonicalSignatureBlock" in core
-    assert "row_pattern_less(lhs.row_key, rhs.row_key)" in core
+    assert "row_pattern_id_.assign(static_cast<size_t>(n_rows_), -1);" in core
+    assert "std::unordered_map<int, CanonicalSignatureBlock> blocks_by_pattern;" in core
+    assert "return row_pattern_less(row_ptr(lhs_row), row_ptr(rhs_row));" in core
     assert "encode_signature_code(" not in core
 
 
@@ -136,6 +139,17 @@ def test_nonlinear_support_canonicalizes_group_assignments():
     assert "if (!canonicalize_group_assignment(canonical_assign, groups))" in support
     assert "out.assignment = std::move(canonical_assign);" in support
     assert "if (lhs.assignment == rhs.assignment)" in support
+    assert "atomized_candidate_dominates(impurity, misclassification)" in support
+    assert "atomized_candidate_dominates(misclassification, impurity)" in support
+
+
+def test_nonlinear_selector_above_lookahead_has_no_pair_level_shortlist():
+    heuristic = _current_solver_source_text()["heuristic"]
+
+    assert "std::vector<CandidateEval> reference_candidates;" not in heuristic
+    assert "resolve_pair_budget" not in heuristic
+    assert "ensure_anchor" not in heuristic
+    assert "early_stop_idx" not in heuristic
 
 
 def test_nonlinear_selector_caches_duplicate_exact_child_evaluations():

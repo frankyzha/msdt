@@ -1250,17 +1250,18 @@
         return out;
     }
 
-    AtomizedCandidatePair solve_atomized_geometry_family_pair(
+    std::vector<AtomizedCandidatePair> solve_atomized_geometry_family_pairs(
         const std::vector<AtomizedAtom> &atoms,
         const AtomizedPrefixes &prefix,
         int feature,
-        int groups
+        int max_groups
     ) const {
-        AtomizedCandidatePair out;
+        std::vector<AtomizedCandidatePair> out;
         const int m = (int)atoms.size();
-        if (groups < 2 || groups > m) {
+        if (max_groups < 2 || max_groups > m) {
             return out;
         }
+        out.resize((size_t)max_groups + 1U);
 
         const int stride = m + 1;
         auto at = [stride](int g, int t) -> size_t {
@@ -1268,19 +1269,19 @@
         };
 
         std::vector<AtomizedScore> dp_impurity(
-            static_cast<size_t>(groups + 1) * static_cast<size_t>(stride));
+            static_cast<size_t>(max_groups + 1) * static_cast<size_t>(stride));
         std::vector<AtomizedScore> dp_hardloss(
-            static_cast<size_t>(groups + 1) * static_cast<size_t>(stride));
+            static_cast<size_t>(max_groups + 1) * static_cast<size_t>(stride));
         std::vector<int> parent_impurity(
-            static_cast<size_t>(groups + 1) * static_cast<size_t>(stride),
+            static_cast<size_t>(max_groups + 1) * static_cast<size_t>(stride),
             -1);
         std::vector<int> parent_hardloss(
-            static_cast<size_t>(groups + 1) * static_cast<size_t>(stride),
+            static_cast<size_t>(max_groups + 1) * static_cast<size_t>(stride),
             -1);
         dp_impurity[at(0, 0)] = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
         dp_hardloss[at(0, 0)] = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
 
-        for (int g = 1; g <= groups; ++g) {
+        for (int g = 1; g <= max_groups; ++g) {
             for (int t = g; t <= m; ++t) {
                 AtomizedScore best_impurity;
                 AtomizedScore best_hardloss;
@@ -1288,14 +1289,13 @@
                 int best_hardloss_p = -1;
                 for (int p = g - 1; p <= t - 1; ++p) {
                     const AtomizedScore &prev_impurity = dp_impurity[at(g - 1, p)];
-                    const AtomizedScore &prev_hardloss = dp_hardloss[at(g - 1, p)];
                     const bool impurity_prev_feasible =
                         std::isfinite(atomized_primary_objective(
                             prev_impurity,
                             AtomizedObjectiveMode::kImpurity));
                     const bool hardloss_prev_feasible =
                         std::isfinite(atomized_primary_objective(
-                            prev_hardloss,
+                            dp_hardloss[at(g - 1, p)],
                             AtomizedObjectiveMode::kHardLoss));
                     if (!impurity_prev_feasible && !hardloss_prev_feasible) {
                         continue;
@@ -1374,7 +1374,7 @@
                         }
                     }
                     if (hardloss_prev_feasible) {
-                        AtomizedScore cand = extend(prev_hardloss);
+                        AtomizedScore cand = extend(dp_hardloss[at(g - 1, p)]);
                         if (best_hardloss_p < 0 ||
                             atomized_score_better(
                                 cand,
@@ -1396,7 +1396,8 @@
             }
         }
 
-        auto build_candidate = [&](const std::vector<AtomizedScore> &dp,
+        auto build_candidate = [&](int groups,
+                                   const std::vector<AtomizedScore> &dp,
                                    const std::vector<int> &parent,
                                    AtomizedObjectiveMode mode) {
             AtomizedCandidate candidate;
@@ -1427,14 +1428,18 @@
             return candidate;
         };
 
-        out.impurity = build_candidate(
-            dp_impurity,
-            parent_impurity,
-            AtomizedObjectiveMode::kImpurity);
-        out.misclassification = build_candidate(
-            dp_hardloss,
-            parent_hardloss,
-            AtomizedObjectiveMode::kHardLoss);
+        for (int groups = 2; groups <= max_groups; ++groups) {
+            out[(size_t)groups].impurity = build_candidate(
+                groups,
+                dp_impurity,
+                parent_impurity,
+                AtomizedObjectiveMode::kImpurity);
+            out[(size_t)groups].misclassification = build_candidate(
+                groups,
+                dp_hardloss,
+                parent_hardloss,
+                AtomizedObjectiveMode::kHardLoss);
+        }
         return out;
     }
 
@@ -1649,13 +1654,16 @@
         prepared.coarse_by_groups.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
         prepared.coarse_by_groups_hardloss.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
 
-        bool any_feasible = false;
-        for (int groups = 2; groups <= prepared.q_effective; ++groups) {
-            const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
+        const std::vector<AtomizedCandidatePair> raw_seed_pairs =
+            solve_atomized_geometry_family_pairs(
                 prepared.atoms,
                 prepared.atom_prefix,
                 feature,
-                groups);
+                prepared.q_effective);
+
+        bool any_feasible = false;
+        for (int groups = 2; groups <= prepared.q_effective; ++groups) {
+            const AtomizedCandidatePair &raw_seed_pair = raw_seed_pairs[(size_t)groups];
             AtomizedCandidate impurity_raw_seed = raw_seed_pair.impurity;
             AtomizedCandidate hardloss_raw_seed = raw_seed_pair.misclassification;
             impurity_raw_seed.feature = feature;

@@ -1,5 +1,23 @@
 import numpy as np
 
+from benchmark.scripts.benchmark_cached_msplit import run_cached_msplit
+from benchmark.scripts.cache_utils import (
+    DEFAULT_CACHE_SEED,
+    DEFAULT_MAX_BINS,
+    DEFAULT_MIN_CHILD_SIZE,
+    DEFAULT_MIN_SAMPLES_LEAF,
+    DEFAULT_TEST_SIZE,
+    DEFAULT_VAL_SIZE,
+    default_cache_path,
+    load_cache,
+)
+from benchmark.scripts.msplit_benchmark_defaults import (
+    DEFAULT_EXACTIFY_TOP_K,
+    DEFAULT_LOOKAHEAD_DEPTH,
+    DEFAULT_MAX_BRANCHING,
+    DEFAULT_MIN_SPLIT_SIZE,
+    DEFAULT_REG,
+)
 from split import MSPLIT
 
 
@@ -101,6 +119,105 @@ def test_native_wrapper_exactify_metrics_exposed():
     assert model.nominee_exactify_prefix_total_ >= 0
     assert 1 <= model.nominee_exactify_prefix_max_ <= 2
     assert isinstance(model.nominee_exactify_prefix_histogram_, list)
+
+
+def test_native_wrapper_lookahead_depth_one_is_greedy_from_root():
+    X = np.array(
+        [
+            [0, 0],
+            [0, 1],
+            [1, 0],
+            [1, 1],
+        ],
+        dtype=np.int32,
+    )
+    y = np.array([0, 1, 1, 0], dtype=np.int32)
+    teacher = np.array([-1.0, 1.0, 1.0, -1.0], dtype=np.float64)
+
+    cpp_model = MSPLIT(
+        full_depth_budget=3,
+        lookahead_depth_budget=1,
+        reg=0.0,
+        min_child_size=1,
+        max_branching=4,
+        use_cpp_solver=True,
+    ).fit(X, y, teacher_logit=teacher)
+
+    py_model = MSPLIT(
+        full_depth_budget=3,
+        lookahead_depth_budget=1,
+        reg=0.0,
+        min_child_size=1,
+        max_branching=4,
+        use_cpp_solver=False,
+    ).fit(X, y, teacher_logit=teacher)
+
+    assert cpp_model.effective_lookahead_depth_ == 1
+    assert cpp_model.exact_dp_subproblem_calls_above_lookahead_ == 0
+    assert cpp_model.greedy_subproblem_calls_ > 0
+
+    assert py_model.effective_lookahead_depth_ == 1
+    assert py_model.exact_dp_subproblem_calls_above_lookahead_ == 0
+    assert py_model.greedy_subproblem_calls_ > 0
+
+
+def test_native_wrapper_rejects_non_positive_lookahead_depth():
+    X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int32)
+    y = np.array([0, 0, 1, 1], dtype=np.int32)
+
+    for kwargs, expected_message in [
+        ({"lookahead_depth": 0}, "lookahead_depth"),
+        ({"lookahead_depth_budget": -1}, "lookahead_depth_budget"),
+    ]:
+        model = MSPLIT(
+            full_depth_budget=3,
+            reg=0.0,
+            min_child_size=1,
+            max_branching=4,
+            use_cpp_solver=False,
+            **kwargs,
+        )
+        try:
+            model.fit(X, y)
+        except ValueError as exc:
+            assert expected_message in str(exc)
+        else:
+            raise AssertionError("Expected non-positive lookahead depth to raise ValueError.")
+
+
+def test_native_cached_electricity_depth6_smoke(monkeypatch):
+    monkeypatch.setenv("MSDT_BENCHMARK_GUARD", "0")
+    monkeypatch.setenv("MSPLIT_BUILD_DIR", "build-nonlinear-py")
+
+    cache_path = default_cache_path(
+        dataset="electricity",
+        seed=DEFAULT_CACHE_SEED,
+        test_size=DEFAULT_TEST_SIZE,
+        val_size=DEFAULT_VAL_SIZE,
+        max_bins=DEFAULT_MAX_BINS,
+        min_samples_leaf=DEFAULT_MIN_SAMPLES_LEAF,
+        min_child_size=DEFAULT_MIN_CHILD_SIZE,
+    )
+    cache = load_cache(cache_path)
+
+    result = run_cached_msplit(
+        cache=cache,
+        depth=6,
+        lookahead_depth=DEFAULT_LOOKAHEAD_DEPTH,
+        reg=DEFAULT_REG,
+        exactify_top_k=DEFAULT_EXACTIFY_TOP_K,
+        min_split_size=DEFAULT_MIN_SPLIT_SIZE,
+        min_child_size=DEFAULT_MIN_CHILD_SIZE,
+        max_branching=DEFAULT_MAX_BRANCHING,
+        worker_limit=1,
+        include_tree=False,
+        include_diagnostics=False,
+        verbose=False,
+    )
+
+    assert result["fit_seconds"] < 30.0
+    assert result["n_internal"] >= 1
+    assert result["test_accuracy"] >= 0.87
 
 
 def test_native_wrapper_parallel_exactify_matches_serial():

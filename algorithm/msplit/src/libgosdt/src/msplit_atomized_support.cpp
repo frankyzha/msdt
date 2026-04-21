@@ -711,12 +711,12 @@
         if (!lhs.feasible || !rhs.feasible) {
             return false;
         }
+        const double lhs_joint_impurity = atomized_joint_impurity(lhs.score);
+        const double rhs_joint_impurity = atomized_joint_impurity(rhs.score);
         const bool loss_not_worse = lhs.score.hard_loss <= rhs.score.hard_loss + kEpsUpdate;
-        const bool impurity_not_worse =
-            lhs.score.hard_impurity <= rhs.score.hard_impurity + kEpsUpdate;
+        const bool impurity_not_worse = lhs_joint_impurity <= rhs_joint_impurity + kEpsUpdate;
         const bool loss_better = lhs.score.hard_loss < rhs.score.hard_loss - kEpsUpdate;
-        const bool impurity_better =
-            lhs.score.hard_impurity < rhs.score.hard_impurity - kEpsUpdate;
+        const bool impurity_better = lhs_joint_impurity < rhs_joint_impurity - kEpsUpdate;
         return loss_not_worse && impurity_not_worse && (loss_better || impurity_better);
     }
 
@@ -916,6 +916,24 @@
             }
             ++telemetry.atomized_coarse_pruned_candidates;
             selected.push_back(std::move(impurity));
+            return selected;
+        }
+        if (atomized_candidate_dominates(impurity, misclassification)) {
+            ++telemetry.atomized_coarse_pruned_candidates;
+            if (diagnostics) {
+                ++telemetry.family1_selected_by_dominance;
+                ++telemetry.partition_refinement_final_geo_wins;
+            }
+            selected.push_back(std::move(impurity));
+            return selected;
+        }
+        if (atomized_candidate_dominates(misclassification, impurity)) {
+            ++telemetry.atomized_coarse_pruned_candidates;
+            if (diagnostics) {
+                ++telemetry.family2_selected_by_dominance;
+                ++telemetry.partition_refinement_final_block_wins;
+            }
+            selected.push_back(std::move(misclassification));
             return selected;
         }
         if (diagnostics) {

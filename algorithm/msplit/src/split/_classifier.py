@@ -40,7 +40,7 @@ class GOSDTClassifier(ClassifierMixin, BaseEstimator):
 
     depth_budget : int | None, default=None
         Sets the maximum tree depth for a solution model, counting a tree with just 
-        the root node as a tree of depth 0 
+        the root node as a tree of depth 1.
         #todo(Ilias: Discuss this change with Margo, the old default was using 0 as a sentinel value and we can still do that in CPP with this as a replacement for the Python frontend).
 
     time_limit: int | None, default=None

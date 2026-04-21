@@ -275,12 +275,17 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         return (weights / total_weight).astype(np.float64, copy=False)
 
     def _resolve_lookahead_depth(self) -> int:
+        source_name = None
         if self.lookahead_depth is not None:
             requested_depth = int(self.lookahead_depth)
+            source_name = "lookahead_depth"
         elif self.lookahead_depth_budget is not None:
             requested_depth = int(self.lookahead_depth_budget)
+            source_name = "lookahead_depth_budget"
         else:
             requested_depth = max(1, (self.full_depth_budget + 1) // 2)
+        if source_name is not None and requested_depth < 1:
+            raise ValueError(f"{source_name} must be at least 1")
         return max(1, min(requested_depth, self.full_depth_budget))
 
     def _assign_scalar_metrics(
@@ -570,7 +575,8 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
 
     def _solve_subproblem(self, indices: np.ndarray, depth_remaining: int, current_depth: int) -> BoundResult:
         self._check_timeout()
-        if current_depth < self.effective_lookahead_depth_:
+        current_tree_depth = current_depth + 1
+        if current_tree_depth < self.effective_lookahead_depth_:
             self.exact_dp_subproblem_calls_above_lookahead_ += 1
         canonical_indices = np.sort(indices, kind="mergesort")
         key = (canonical_indices.tobytes(), depth_remaining)
@@ -586,7 +592,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             self._dp_cache[key] = result
             return result
 
-        if current_depth == self.effective_lookahead_depth_:
+        if current_tree_depth >= self.effective_lookahead_depth_:
             greedy_obj, greedy_tree = self._greedy_complete(indices, depth_remaining)
             result = BoundResult(lb=greedy_obj, ub=greedy_obj, tree=greedy_tree)
             self._dp_cache[key] = result
