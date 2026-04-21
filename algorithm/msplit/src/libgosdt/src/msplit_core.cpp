@@ -641,6 +641,7 @@ class Solver {
         initialize_class_info();
         initialize_weights();
         initialize_teacher_prob();
+        initialize_teacher_reliability();
         initialize_feature_bin_max();
         initialize_teacher_boundary_strength();
         if (profiling_enabled_) {
@@ -901,6 +902,7 @@ class Solver {
     std::vector<double> teacher_prob_;
     std::vector<double> teacher_prob_flat_;
     std::vector<int> teacher_prediction_;
+    double soft_impurity_weight_ = 1.0;
     int n_classes_ = 0;
     bool binary_mode_ = true;
     int teacher_boundary_cols_ = 0;
@@ -1724,6 +1726,29 @@ class Solver {
             }
             teacher_prediction_[(size_t)row] = best_cls;
         }
+    }
+
+    void initialize_teacher_reliability() {
+        soft_impurity_weight_ = 1.0;
+        if (teacher_prediction_.empty()) {
+            return;
+        }
+        double total_weight = 0.0;
+        double correct_weight = 0.0;
+        for (int row = 0; row < n_rows_; ++row) {
+            const double weight = sample_weight_.empty() ? 1.0 : sample_weight_[(size_t)row];
+            if (weight <= kEpsUpdate) {
+                continue;
+            }
+            total_weight += weight;
+            if (teacher_prediction_[(size_t)row] == y_[(size_t)row]) {
+                correct_weight += weight;
+            }
+        }
+        if (total_weight <= kEpsUpdate) {
+            return;
+        }
+        soft_impurity_weight_ = std::clamp(correct_weight / total_weight, 0.0, 1.0);
     }
 
     void initialize_feature_bin_max() {

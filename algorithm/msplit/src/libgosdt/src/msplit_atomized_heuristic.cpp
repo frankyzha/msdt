@@ -186,11 +186,9 @@
         double upper_bound = kInfinity;
     };
 
-    static int compare_nominee_eval_core(const NomineeEval &lhs, const NomineeEval &rhs) {
-        const double lhs_impurity =
-            lhs.candidate.score.hard_impurity + lhs.candidate.score.soft_impurity;
-        const double rhs_impurity =
-            rhs.candidate.score.hard_impurity + rhs.candidate.score.soft_impurity;
+    int compare_nominee_eval_core(const NomineeEval &lhs, const NomineeEval &rhs) const {
+        const double lhs_impurity = atomized_active_impurity_objective(lhs.candidate.score);
+        const double rhs_impurity = atomized_active_impurity_objective(rhs.candidate.score);
         if (lhs_impurity < rhs_impurity - kEpsUpdate) {
             return -1;
         }

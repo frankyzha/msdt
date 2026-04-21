@@ -193,6 +193,14 @@
         return AtomizedCompressionRule::kCurrent;
     }
 
+    double atomized_soft_impurity_weight() const {
+        return soft_impurity_weight_;
+    }
+
+    double atomized_active_impurity_objective(const AtomizedScore &score) const {
+        return score.hard_impurity + atomized_soft_impurity_weight() * score.soft_impurity;
+    }
+
     static bool atom_is_empirically_pure(const AtomizedAtom &atom) {
         if (!atom.class_weight.empty()) {
             double total = 0.0;
@@ -551,7 +559,7 @@
         if (mode == AtomizedObjectiveMode::kHardLoss) {
             return score.hard_loss;
         }
-        return score.hard_impurity + score.soft_impurity;
+        return atomized_active_impurity_objective(score);
     }
 
     double atomized_candidate_primary_objective(const AtomizedCandidate &candidate) const {
@@ -711,8 +719,8 @@
         if (!lhs.feasible || !rhs.feasible) {
             return false;
         }
-        const double lhs_joint_impurity = atomized_joint_impurity(lhs.score);
-        const double rhs_joint_impurity = atomized_joint_impurity(rhs.score);
+        const double lhs_joint_impurity = atomized_active_impurity_objective(lhs.score);
+        const double rhs_joint_impurity = atomized_active_impurity_objective(rhs.score);
         const bool loss_not_worse = lhs.score.hard_loss <= rhs.score.hard_loss + kEpsUpdate;
         const bool impurity_not_worse = lhs_joint_impurity <= rhs_joint_impurity + kEpsUpdate;
         const bool loss_better = lhs.score.hard_loss < rhs.score.hard_loss - kEpsUpdate;

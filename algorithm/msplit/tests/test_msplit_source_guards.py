@@ -160,3 +160,12 @@ def test_nonlinear_selector_caches_duplicate_exact_child_evaluations():
     assert "struct CachedExactChildren" in heuristic
     assert "exact_child_eval_cache" in heuristic
     assert "nominee_child_partition_key" in heuristic
+
+
+def test_nonlinear_impurity_weight_is_solver_state_not_env_switch():
+    texts = _current_solver_source_text()
+    text = "\n".join(texts.values())
+
+    assert "MSPLIT_IMPURITY_METRIC" not in text
+    assert "MSPLIT_SOFT_IMPURITY_WEIGHT" not in text
+    assert "soft_impurity_weight_" in texts["core"]
