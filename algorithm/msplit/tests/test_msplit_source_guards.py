@@ -143,12 +143,14 @@ def test_nonlinear_support_canonicalizes_group_assignments():
     assert "atomized_candidate_dominates(misclassification, impurity)" in support
 
 
-def test_nonlinear_selector_above_lookahead_has_no_pair_level_shortlist():
+def test_nonlinear_selector_above_lookahead_uses_anchor_exactification_not_pair_shortlist():
     heuristic = _current_solver_source_text()["heuristic"]
 
     assert "std::vector<CandidateEval> reference_candidates;" not in heuristic
     assert "resolve_pair_budget" not in heuristic
-    assert "ensure_anchor" not in heuristic
+    assert "ensure_anchor" in heuristic
+    assert "best_impurity_idx" in heuristic
+    assert "best_hardloss_idx" in heuristic
     assert "early_stop_idx" not in heuristic
 
 

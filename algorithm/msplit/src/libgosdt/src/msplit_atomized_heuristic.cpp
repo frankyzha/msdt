@@ -782,24 +782,84 @@
         for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
             alive_indices.push_back(idx);
         }
-        size_t exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
-        if (exactify_budget_count == 1U && alive_indices.size() > 1U) {
-            const auto best_it = std::min_element(
-                alive_indices.begin(),
-                alive_indices.end(),
-                nominee_prefer);
-            const size_t best_idx = *best_it;
-            alive_indices.clear();
-            alive_indices.push_back(best_idx);
-        } else if (exactify_budget_count < alive_indices.size()) {
-            auto prefix_end =
-                alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count);
-            std::nth_element(
-                alive_indices.begin(),
-                prefix_end,
-                alive_indices.end(),
-                nominee_prefer);
-            alive_indices.resize(exactify_budget_count);
+        size_t exactify_budget_count = 0U;
+        if (above_lookahead) {
+            size_t best_impurity_idx = std::numeric_limits<size_t>::max();
+            size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
+            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                if (nominee_evals[idx].candidate.hard_loss_mode) {
+                    if (best_hardloss_idx == std::numeric_limits<size_t>::max() ||
+                        nominee_prefer(idx, best_hardloss_idx)) {
+                        best_hardloss_idx = idx;
+                    }
+                } else if (best_impurity_idx == std::numeric_limits<size_t>::max() ||
+                           nominee_prefer(idx, best_impurity_idx)) {
+                    best_impurity_idx = idx;
+                }
+            }
+            size_t anchor_count = 0U;
+            if (best_impurity_idx != std::numeric_limits<size_t>::max()) {
+                ++anchor_count;
+            }
+            if (best_hardloss_idx != std::numeric_limits<size_t>::max() &&
+                best_hardloss_idx != best_impurity_idx) {
+                ++anchor_count;
+            }
+            exactify_budget_count = std::max(
+                resolve_exactify_budget(nominee_evals.size()),
+                anchor_count);
+            if (exactify_budget_count < alive_indices.size()) {
+                auto prefix_end =
+                    alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count);
+                std::nth_element(
+                    alive_indices.begin(),
+                    prefix_end,
+                    alive_indices.end(),
+                    nominee_prefer);
+                alive_indices.resize(exactify_budget_count);
+                auto ensure_anchor = [&](size_t anchor_idx) {
+                    if (anchor_idx == std::numeric_limits<size_t>::max()) {
+                        return;
+                    }
+                    if (std::find(alive_indices.begin(), alive_indices.end(), anchor_idx) !=
+                        alive_indices.end()) {
+                        return;
+                    }
+                    size_t replace_pos = alive_indices.empty() ? 0U : alive_indices.size() - 1U;
+                    while (replace_pos > 0U &&
+                           (alive_indices[replace_pos] == best_impurity_idx ||
+                            alive_indices[replace_pos] == best_hardloss_idx)) {
+                        --replace_pos;
+                    }
+                    if (alive_indices.empty()) {
+                        alive_indices.push_back(anchor_idx);
+                    } else {
+                        alive_indices[replace_pos] = anchor_idx;
+                    }
+                };
+                ensure_anchor(best_impurity_idx);
+                ensure_anchor(best_hardloss_idx);
+            }
+        } else {
+            exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
+            if (exactify_budget_count == 1U && alive_indices.size() > 1U) {
+                const auto best_it = std::min_element(
+                    alive_indices.begin(),
+                    alive_indices.end(),
+                    nominee_prefer);
+                const size_t best_idx = *best_it;
+                alive_indices.clear();
+                alive_indices.push_back(best_idx);
+            } else if (exactify_budget_count < alive_indices.size()) {
+                auto prefix_end =
+                    alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count);
+                std::nth_element(
+                    alive_indices.begin(),
+                    prefix_end,
+                    alive_indices.end(),
+                    nominee_prefer);
+                alive_indices.resize(exactify_budget_count);
+            }
         }
         std::sort(alive_indices.begin(), alive_indices.end(), nominee_prefer);
 
