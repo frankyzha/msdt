@@ -1043,114 +1043,6 @@
         return improved ? refined : seed;
     }
 
-    AtomizedCandidate solve_atomized_geometry_family(
-        const std::vector<AtomizedBin> &atoms,
-        const AtomizedPrefixes &prefix,
-        int feature,
-        int groups,
-        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
-    ) const {
-        AtomizedCandidate out;
-        const int m = (int)atoms.size();
-        if (groups < 2 || groups > m) {
-            return out;
-        }
-
-        const int stride = m + 1;
-        auto at = [stride](int g, int t) -> size_t {
-            return static_cast<size_t>(g) * static_cast<size_t>(stride) + static_cast<size_t>(t);
-        };
-
-        std::vector<AtomizedScore> dp(static_cast<size_t>(groups + 1) * static_cast<size_t>(stride));
-        std::vector<int> parent(static_cast<size_t>(groups + 1) * static_cast<size_t>(stride), -1);
-        dp[at(0, 0)] = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
-
-        for (int g = 1; g <= groups; ++g) {
-            for (int t = g; t <= m; ++t) {
-                AtomizedScore best;
-                int best_p = -1;
-                for (int p = g - 1; p <= t - 1; ++p) {
-                    const AtomizedScore &prev = dp[at(g - 1, p)];
-                    if (!std::isfinite(prev.hard_impurity)) {
-                        continue;
-                    }
-                    const int row_count = prefix.rows[(size_t)t] - prefix.rows[(size_t)p];
-                    if (row_count < min_child_size_) {
-                        continue;
-                    }
-                    AtomizedScore cand = prev;
-                    if (binary_mode_) {
-                        const double seg_pos = prefix.pos[(size_t)t] - prefix.pos[(size_t)p];
-                        const double seg_neg = prefix.neg[(size_t)t] - prefix.neg[(size_t)p];
-                        const double seg_teacher_pos = prefix.teacher_pos[(size_t)t] - prefix.teacher_pos[(size_t)p];
-                        const double seg_teacher_neg = prefix.teacher_neg[(size_t)t] - prefix.teacher_neg[(size_t)p];
-                        cand.hard_loss += split_leaf_loss(seg_pos, seg_neg);
-                        cand.soft_loss += split_leaf_loss(seg_teacher_pos, seg_teacher_neg);
-                        cand.hard_impurity += hard_label_impurity(seg_pos, seg_neg);
-                    } else {
-                        cand.hard_loss += split_leaf_loss_prefix_segment(
-                            prefix.class_weight_prefix,
-                            n_classes_,
-                            p,
-                            t);
-                        cand.soft_loss += split_leaf_loss_prefix_segment(
-                            prefix.teacher_class_weight_prefix,
-                            n_classes_,
-                            p,
-                            t);
-                        cand.hard_impurity += hard_label_impurity_prefix_segment(
-                            prefix.class_weight_prefix,
-                            n_classes_,
-                            p,
-                            t);
-                    }
-                    if (p > 0) {
-                        cand.boundary_penalty -= contiguous_boundary_bonus(
-                            feature,
-                            atoms[(size_t)(p - 1)],
-                            atoms[(size_t)p]);
-                    }
-                    cand.components += 1;
-                    if (best_p < 0 || atomized_score_better(cand, best, mode)) {
-                        best = cand;
-                        best_p = p;
-                    }
-                }
-                if (best_p >= 0) {
-                    dp[at(g, t)] = best;
-                    parent[at(g, t)] = best_p;
-                }
-            }
-        }
-
-        if (!std::isfinite(atomized_primary_objective(dp[at(groups, m)], mode))) {
-            return out;
-        }
-
-        std::vector<int> partition((size_t)m, -1);
-        int t = m;
-        int g = groups;
-        int group_idx = groups - 1;
-        while (g > 0) {
-            const int p = parent[at(g, t)];
-            if (p < 0) {
-                return AtomizedCandidate{};
-            }
-            for (int pos = p; pos < t; ++pos) {
-                partition[(size_t)pos] = group_idx;
-            }
-            t = p;
-            --g;
-            --group_idx;
-        }
-
-        out.feasible = true;
-        out.score = dp[at(groups, m)];
-        out.groups = groups;
-        out.partition = std::move(partition);
-        return out;
-    }
-
     std::vector<AtomizedCandidatePair> solve_atomized_geometry_family_pairs(
         const std::vector<AtomizedBin> &atoms,
         const AtomizedPrefixes &prefix,
@@ -1447,7 +1339,8 @@
             std::vector<int> active_impurity;
             std::vector<unsigned char> active_impurity_flag((size_t)m + 1U, 0U);
             std::vector<int> scheduled_prune_at((size_t)m + 1U, m + 1);
-            std::vector<std::vector<int>> prune_events((size_t)m + 2U);
+            std::vector<int> prune_event_head((size_t)m + 2U, -1);
+            std::vector<int> prune_event_next((size_t)m + 1U, -1);
             size_t live_impurity_count = 0U;
             if (state_feasible(dp_impurity, g - 1, g - 1, AtomizedObjectiveMode::kImpurity)) {
                 active_impurity.push_back(g - 1);
@@ -1455,7 +1348,7 @@
                 live_impurity_count = 1U;
             }
             for (int t = g; t <= m; ++t) {
-                for (int p : prune_events[(size_t)t]) {
+                for (int p = prune_event_head[(size_t)t]; p >= 0; p = prune_event_next[(size_t)p]) {
                     if (scheduled_prune_at[(size_t)p] == t &&
                         active_impurity_flag[(size_t)p]) {
                         active_impurity_flag[(size_t)p] = 0U;
@@ -1464,6 +1357,12 @@
                         }
                     }
                 }
+                const bool prev_t_feasible =
+                    state_feasible(dp_impurity, g - 1, t, AtomizedObjectiveMode::kImpurity);
+                const double prev_t_primary =
+                    prev_t_feasible ? dp_impurity[at(g - 1, t)].hard_impurity : kInfinity;
+                const int activation =
+                    prev_t_feasible ? impurity_prune_activation[(size_t)t] : (m + 1);
                 double best_primary = kInfinity;
                 double best_boundary = kInfinity;
                 int best_parent = -1;
@@ -1471,12 +1370,20 @@
                     if (!active_impurity_flag[(size_t)p]) {
                         continue;
                     }
-                    if (prefix.rows[(size_t)t] - prefix.rows[(size_t)p] < min_child_size_) {
-                        continue;
-                    }
                     const double cand_primary =
                         dp_impurity[at(g - 1, p)].hard_impurity +
                         segment_hard_impurity(p, t);
+                    if (prev_t_feasible &&
+                        activation <= m &&
+                        cand_primary > prev_t_primary + kEpsUpdate &&
+                        activation < scheduled_prune_at[(size_t)p]) {
+                        scheduled_prune_at[(size_t)p] = activation;
+                        prune_event_next[(size_t)p] = prune_event_head[(size_t)activation];
+                        prune_event_head[(size_t)activation] = p;
+                    }
+                    if (prefix.rows[(size_t)t] - prefix.rows[(size_t)p] < min_child_size_) {
+                        continue;
+                    }
                     const double cand_boundary =
                         dp_impurity[at(g - 1, p)].boundary_penalty +
                         cut_boundary_penalty(p);
@@ -1499,27 +1406,7 @@
                         t);
                     parent_impurity[at(g, t)] = best_parent;
                 }
-                const bool prev_t_feasible =
-                    state_feasible(dp_impurity, g - 1, t, AtomizedObjectiveMode::kImpurity);
-                const double prev_t_primary =
-                    prev_t_feasible ? dp_impurity[at(g - 1, t)].hard_impurity : kInfinity;
                 if (prev_t_feasible) {
-                    const int activation = impurity_prune_activation[(size_t)t];
-                    if (activation <= m) {
-                        for (int p : active_impurity) {
-                            if (!active_impurity_flag[(size_t)p]) {
-                                continue;
-                            }
-                            const double prune_lhs =
-                                dp_impurity[at(g - 1, p)].hard_impurity +
-                                segment_hard_impurity(p, t);
-                            if (prune_lhs > prev_t_primary + kEpsUpdate &&
-                                activation < scheduled_prune_at[(size_t)p]) {
-                                scheduled_prune_at[(size_t)p] = activation;
-                                prune_events[(size_t)activation].push_back(p);
-                            }
-                        }
-                    }
                     active_impurity_flag[(size_t)t] = 1U;
                     active_impurity.push_back(t);
                     ++live_impurity_count;
@@ -1777,13 +1664,15 @@
         }
 
         const AtomizedCompressionRule compression_rule = atomized_compression_rule();
-        prepared.has_block_compression = has_atomized_block_compression(prepared.atoms, compression_rule);
+        prepared.has_block_compression = has_pure_same_class_block_compression(prepared.atoms);
         if (prepared.has_block_compression) {
             build_atomized_blocks_and_bins(
                 prepared.atoms,
                 prepared.blocks,
                 prepared.block_atoms,
                 compression_rule);
+        }
+        if (prepared.has_block_compression) {
             prepared.has_block_compression = prepared.block_atoms.size() < prepared.atoms.size();
         }
         if (prepared.has_block_compression) {

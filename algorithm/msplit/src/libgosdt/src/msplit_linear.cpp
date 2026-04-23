@@ -1487,7 +1487,7 @@
             }
         }
 
-        prepared.has_block_compression = has_atomized_block_compression(prepared.atoms);
+        prepared.has_block_compression = has_pure_same_class_block_compression(prepared.atoms);
         if (prepared.has_block_compression) {
             build_atomized_blocks_and_bins(prepared.atoms, prepared.blocks, prepared.block_atoms);
             prepared.has_block_compression = prepared.block_atoms.size() < prepared.atoms.size();

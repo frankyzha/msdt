@@ -182,10 +182,6 @@
         return AtomizedCompressionRule::kPureSameClass;
     }
 
-    double atomized_soft_impurity_weight() const {
-        return soft_impurity_weight_;
-    }
-
     double atomized_active_impurity_objective(const AtomizedScore &score) const {
         // Gini impurity is the default active impurity family.
         return score.hard_impurity;
@@ -467,6 +463,17 @@
         block.class_weight = atom.class_weight;
         block.teacher_class_weight = atom.teacher_class_weight;
         return block;
+    }
+
+    static bool has_pure_same_class_block_compression(const std::vector<AtomizedBin> &atoms) {
+        for (size_t i = 1; i < atoms.size(); ++i) {
+            if (bin_is_empirically_pure(atoms[i - 1]) &&
+                bin_is_empirically_pure(atoms[i]) &&
+                atoms[i - 1].empirical_prediction == atoms[i].empirical_prediction) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void atomized_refresh_block_predictions(AtomizedBlock &block) const {
@@ -1093,60 +1100,6 @@
             atom.teacher_prob = (teacher_total > kEpsUpdate) ? (atom.teacher_pos_weight / teacher_total) : 0.5;
         }
         block_atoms.push_back(std::move(atom));
-    }
-
-    bool has_atomized_block_compression(
-        const std::vector<AtomizedBin> &atoms,
-        AtomizedCompressionRule rule = AtomizedCompressionRule::kCurrent
-    ) const {
-        if (rule == AtomizedCompressionRule::kConfidenceOverlap) {
-            if (atoms.size() <= 1U) {
-                return false;
-            }
-            AtomizedBlock current = atomized_block_from_bin(atoms.front());
-            for (size_t i = 1; i < atoms.size(); ++i) {
-                const AtomizedBlock next = atomized_block_from_bin(atoms[i]);
-                if (atomized_confidence_overlap(current, next)) {
-                    return true;
-                }
-                current = next;
-            }
-            return false;
-        }
-        if (rule == AtomizedCompressionRule::kPlateau) {
-            if (atoms.size() <= 2U) {
-                return false;
-            }
-            for (size_t i = 1; i < atoms.size(); ++i) {
-                if (atomized_confidence_overlap(
-                        atomized_block_from_bin(atoms[i - 1]),
-                        atomized_block_from_bin(atoms[i]))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (rule == AtomizedCompressionRule::kBic) {
-            // BIC compression is only meant to coarsen over-segmented features,
-            // not delete the only boundary of a binary feature.
-            if (atoms.size() <= 2U) {
-                return false;
-            }
-            for (size_t i = 1; i < atoms.size(); ++i) {
-                if (atomized_bic_merge_preferred(
-                        atomized_block_from_bin(atoms[i - 1]),
-                        atomized_block_from_bin(atoms[i]))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        for (size_t i = 1; i < atoms.size(); ++i) {
-            if (atomized_bins_should_merge(atoms[i - 1], atoms[i], rule)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     void build_atomized_blocks_and_bins(
