@@ -11,6 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -74,6 +75,13 @@ def load_local_libgosdt():
         sys.modules["split._libgosdt"] = module
         spec.loader.exec_module(module)
         return module
+
+    if build_override:
+        resolved_override = resolve_msplit_build_dir(build_override)
+        raise FileNotFoundError(
+            "MSPLIT_BUILD_DIR was set, but no built _libgosdt extension was found in "
+            f"{resolved_override}"
+        )
 
     try:
         from split import _libgosdt as live_module
@@ -250,13 +258,41 @@ def run_cached_msplit(
     cpp_result, fit_seconds, timing_guard = guarded_fit(_run_once, repo_root=PROJECT_ROOT)
     if verbose:
         print(f"[msplit] fit done in {fit_seconds:.3f}s", flush=True)
+    native_fit_seconds = float(cpp_result.get("elapsed_time_sec", fit_seconds))
+
+    parse_started = time.perf_counter()
     tree = json.loads(str(cpp_result["tree"]))
+    tree_parse_seconds = float(time.perf_counter() - parse_started)
+
+    predict_started = time.perf_counter()
     pred_train = predict_tree(tree, z_fit)
-    pred_val = predict_tree(tree, z_val) if z_val is not None else None
+    predict_train_seconds = float(time.perf_counter() - predict_started)
+
+    predict_val_seconds = 0.0
+    pred_val = None
+    if z_val is not None:
+        predict_started = time.perf_counter()
+        pred_val = predict_tree(tree, z_val)
+        predict_val_seconds = float(time.perf_counter() - predict_started)
+
+    predict_started = time.perf_counter()
     pred_test = predict_tree(tree, z_test)
+    predict_test_seconds = float(time.perf_counter() - predict_started)
     stats = tree_stats(tree)
+    post_fit_eval_seconds = (
+        tree_parse_seconds
+        + predict_train_seconds
+        + predict_val_seconds
+        + predict_test_seconds
+    )
     result = {
         "fit_seconds": float(fit_seconds),
+        "native_fit_seconds": native_fit_seconds,
+        "post_fit_eval_seconds": float(post_fit_eval_seconds),
+        "tree_parse_seconds": float(tree_parse_seconds),
+        "predict_train_seconds": float(predict_train_seconds),
+        "predict_val_seconds": float(predict_val_seconds),
+        "predict_test_seconds": float(predict_test_seconds),
         "train_accuracy": float(np.mean(pred_train == y_fit)),
         "val_accuracy": float(np.mean(pred_val == y_val)) if pred_val is not None and y_val is not None else None,
         "test_accuracy": float(np.mean(pred_test == y_test)),
@@ -279,7 +315,7 @@ def run_cached_msplit(
         "greedy_cache_hits": int(cpp_result.get("greedy_cache_hits", 0)),
         "greedy_unique_states": int(cpp_result.get("greedy_unique_states", 0)),
         "greedy_interval_evals": int(cpp_result.get("greedy_interval_evals", 0)),
-        "elapsed_time_sec": float(cpp_result.get("elapsed_time_sec", 0.0)),
+        "elapsed_time_sec": native_fit_seconds,
         "partition_refinement_refine_calls": int(cpp_result.get("partition_refinement_refine_calls", 0)),
         "partition_refinement_refine_improved": int(cpp_result.get("partition_refinement_refine_improved", 0)),
         "partition_refinement_total_moves": int(cpp_result.get("partition_refinement_total_moves", 0)),

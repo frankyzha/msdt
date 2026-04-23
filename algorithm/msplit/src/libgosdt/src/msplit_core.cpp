@@ -596,8 +596,6 @@ class Solver {
         if (lookahead_depth_ < 0) {
             throw std::invalid_argument("MSPLIT lookahead_depth must be non-negative.");
         }
-        // Exact-prefix memoization is cheap enough to keep on by default.
-        greedy_cache_max_depth_ = full_depth_budget_;
         // When lookahead is unset, follow the SPLIT-style default of roughly half the tree depth.
         const int requested_lookahead_depth =
             (lookahead_depth_ > 0)
@@ -605,6 +603,9 @@ class Solver {
                 : std::max(1, (full_depth_budget_ + 1) / 2);
         effective_lookahead_depth_ =
             std::max(1, std::min(full_depth_budget_, requested_lookahead_depth));
+        // Cache the exact-prefix band by default; shallow states above lookahead
+        // are rarely revisited and paying to serialize them is mostly overhead.
+        greedy_cache_max_depth_ = effective_lookahead_depth_;
         if (regularization_ < 0.0) {
             throw std::invalid_argument("MSPLIT regularization must be non-negative.");
         }
@@ -1547,9 +1548,7 @@ class Solver {
         const char *greedy_cache_max_depth_env = std::getenv("MSPLIT_GREEDY_CACHE_MAX_DEPTH");
         if (greedy_cache_max_depth_env != nullptr && *greedy_cache_max_depth_env != '\0') {
             const int parsed = std::atoi(greedy_cache_max_depth_env);
-            if (parsed >= 0) {
-                greedy_cache_max_depth_ = parsed;
-            }
+            greedy_cache_max_depth_ = parsed;
         }
     }
 

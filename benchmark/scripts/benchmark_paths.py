@@ -40,4 +40,7 @@ def resolve_msplit_build_dir(build_dir: str | Path) -> Path:
     build_path = Path(build_dir)
     if build_path.is_absolute():
         return build_path
+    project_relative = (PROJECT_ROOT / build_path).resolve()
+    if project_relative.exists():
+        return project_relative
     return (MSPLIT_ROOT / build_path).resolve()

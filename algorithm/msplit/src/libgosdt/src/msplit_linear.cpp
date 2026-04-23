@@ -1762,10 +1762,16 @@
             }
             return key;
         };
-        const std::string state_key = make_state_key(indices, depth_remaining);
-        GreedyResult cached_result;
-        if (greedy_cache_lookup(state_key, cached_result)) {
-            return cached_result;
+        const bool use_greedy_cache =
+            greedy_cache_max_depth_ >= 0 &&
+            depth_remaining <= greedy_cache_max_depth_;
+        std::string state_key;
+        if (use_greedy_cache) {
+            state_key = make_state_key(indices, depth_remaining);
+            GreedyResult cached_result;
+            if (greedy_cache_lookup(state_key, cached_result)) {
+                return cached_result;
+            }
         }
 
         const SubproblemStats stats = compute_subproblem_stats(indices);

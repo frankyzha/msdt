@@ -501,7 +501,9 @@
         ScopedTimer greedy_timer(profiling_greedy_complete_sec_, profiling_enabled_);
         check_timeout();
 
-        const bool use_greedy_cache = greedy_cache_max_depth_ >= 0;
+        const bool use_greedy_cache =
+            greedy_cache_max_depth_ >= 0 &&
+            depth_remaining <= greedy_cache_max_depth_;
         std::string state_key;
         if (use_greedy_cache) {
             state_key = serialized_indices_depth_key(indices, depth_remaining);
